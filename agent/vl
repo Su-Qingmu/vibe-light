@@ -65,6 +65,55 @@ def send_via_daemon(cmd, timeout=3):
         except: pass
 
 
+# ============== UDP Discovery ==============
+
+UDP_DISCOVERY_PORT = 5000
+UDP_DISCOVERY_TIMEOUT = 3.0
+
+
+def discover_esp():
+    """听 UDP 5000,返回第一个发现的 ESP32 IP+port (默认 8888)"""
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    s.bind(("0.0.0.0", UDP_DISCOVERY_PORT))
+    s.settimeout(UDP_DISCOVERY_TIMEOUT)
+    start = time.time()
+    try:
+        while time.time() - start < UDP_DISCOVERY_TIMEOUT:
+            try:
+                data, addr = s.recvfrom(1024)
+            except socket.timeout:
+                break
+            text = data.decode().strip()
+            if text.startswith("vibe-light:"):
+                # Format: "vibe-light:v2 ip=... tcp_port=8888"
+                parts = text.split()
+                ip = addr[0]
+                port = 8888
+                for p in parts[1:]:
+                    if p.startswith("ip="):
+                        ip = p.split("=", 1)[1]
+                    elif p.startswith("tcp_port="):
+                        try: port = int(p.split("=", 1)[1])
+                        except: pass
+                return ip, port
+    finally:
+        s.close()
+    return None, None
+
+
+def resolve_host():
+    """智能选 ESP32:环境变量 > UDP 发现 > 默认 IP"""
+    if os.environ.get("VIBE_HOST"):
+        return os.environ.get("VIBE_HOST"), int(os.environ.get("VIBE_PORT", DEFAULT_PORT))
+    # UDP 发现
+    ip, port = discover_esp()
+    if ip:
+        return ip, port
+    # Fallback
+    return DEFAULT_HOST, DEFAULT_PORT
+
+
 # ============== Global Socket (fallback direct) ==============
 _SOCK = None
 _SOCK_HOST = None
@@ -230,34 +279,55 @@ vl - Vibe Light CLI
 # ============== Main ==============
 
 def main():
+    try:
+        _main_inner()
+    except (ConnectionRefusedError, socket.timeout, OSError) as e:
+        print("❌ 无法连接 ESP32 (" + type(e).__name__ + ": " + str(e) + ")")
+        print("   检查: ESP32 上电? 在同一 WiFi? 启动 vld daemon?")
+        sys.exit(1)
+
+
+def _main_inner():
     parser = argparse.ArgumentParser(description="Vibe Light CLI", add_help=False)
-    parser.add_argument("--host", default=os.environ.get("VIBE_HOST", DEFAULT_HOST))
-    parser.add_argument("--port", default=int(os.environ.get("VIBE_PORT", DEFAULT_PORT)), type=int)
+    parser.add_argument("--host", default=None, help="ESP32 IP (overrides UDP discovery)")
+    parser.add_argument("--port", default=None, type=int, help="ESP32 TCP port")
     parser.add_argument("--client", choices=list(VALID_CLIENTS), default=DEFAULT_CLIENT)
+    parser.add_argument("--no-discover", action="store_true", help="Skip UDP discovery, use defaults")
     parser.add_argument("-h", "--help", action="store_true")
     args, remaining = parser.parse_known_args()
 
+    # Smart host resolution
+    if args.host:
+        host = args.host
+        port = args.port or int(os.environ.get("VIBE_PORT", DEFAULT_PORT))
+    elif args.no_discover or os.environ.get("VIBE_HOST"):
+        host = os.environ.get("VIBE_HOST", DEFAULT_HOST)
+        port = int(os.environ.get("VIBE_PORT", DEFAULT_PORT))
+    else:
+        host, port = resolve_host()
+
     if args.help or (not remaining):
-        cmd_help(args.host, args.port, [])
+        cmd_help(host, port, [])
         return
 
     subcmd = remaining[0]
     subargs = remaining[1:]
 
+    # 映射子命令 (现在传 host/port 而不是 args.host/args.port)
     if subcmd == "help":
-        cmd_help(args.host, args.port, [])
+        cmd_help(host, port, [])
     elif subcmd == "status":
-        cmd_status(args.host, args.port, subargs)
+        cmd_status(host, port, subargs)
     elif subcmd == "ping":
-        cmd_ping(args.host, args.port, subargs)
+        cmd_ping(host, port, subargs)
     elif subcmd == "off":
-        cmd_off(args.host, args.port, subargs)
+        cmd_off(host, port, subargs)
     elif subcmd == "bright":
-        cmd_bright(args.host, args.port, subargs)
+        cmd_bright(host, port, subargs)
     elif subcmd == "--client":
-        cmd_client(args.host, args.port, subargs)
+        cmd_client(host, port, subargs)
     elif "." in subcmd or subcmd in VALID_STATES:
-        cmd_state(args.host, args.port, [subcmd])
+        cmd_state(host, port, [subcmd])
     else:
         print(f"❌ 未知命令: {subcmd}")
         print("运行 'vl help' 看用法")

@@ -41,6 +41,8 @@ import math
 try:
     from config import (
         WIFI_SSID, WIFI_PASS, WIFI_TIMEOUT_MS,
+        UDP_BROADCAST_PORT, UDP_BROADCAST_INTERVAL_MS,
+        UDP_BROADCAST_ENABLED, UDP_BROADCAST_MSG, UDP_BROADCAST_ADDR,
         LED_PIN, LED_COUNT, DEFAULT_BRIGHTNESS,
         TCP_PORT, TCP_BACKLOG, TCP_TIMEOUT_MS,
         BOOT_PIN, BTN_DEBOUNCE_MS, BTN_LONGPRESS_MS, BTN_DOUBLECLICK_MS,
@@ -322,6 +324,54 @@ class Button:
         return event
 
 
+# ============== UDP Broadcaster ==============
+
+class UDPBroadcaster:
+    """跨子网运行时发现 ESP32
+
+    - TCP 空闲时: 每 UDP_BROADCAST_INTERVAL_MS 发一个 announcement UDP 包
+    - 有 client 连接 TCP: 停止广播
+    - 所有 client 断开: 重新广播
+    """
+
+    def __init__(self, port, interval_ms, msg):
+        self.port = port
+        self.interval_ms = interval_ms
+        self.msg = (msg + "\n").encode()
+        self.sock = None
+        self.enabled = UDP_BROADCAST_ENABLED
+        self.last_announce_ms = 0
+
+    def start(self):
+        if not self.enabled:
+            print("UDP: disabled")
+            return
+        try:
+            self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+            self.sock.setblocking(False)
+            print("UDP: broadcasting on " + UDP_BROADCAST_ADDR + ":" + str(self.port) + " every " + str(self.interval_ms) + "ms")
+        except Exception as e:
+            print("UDP: start failed: " + repr(e))
+            self.sock = None
+
+    def announce(self, ip, tcp_port):
+        if not self.enabled or self.sock is None:
+            return
+        payload = "vibe-light:v2 ip=" + str(ip) + " tcp_port=" + str(tcp_port) + "\n"
+        try:
+            self.sock.sendto(payload.encode(), (UDP_BROADCAST_ADDR, self.port))
+        except OSError:
+            pass
+
+    def stop(self):
+        if self.sock:
+            try: self.sock.close()
+            except Exception: pass
+            self.sock = None
+
+
 # ============== WiFi ==============
 class WiFi:
     def __init__(self, ssid, pwd, timeout_ms):
@@ -546,6 +596,10 @@ def main():
     led.show(state)
     print(f"=== Ready (ip={ip} client={state.client} state={state.state}) ===")
 
+    # UDP broadcaster: 当无 client 连接时 1 秒 1 次广播
+    udp = UDPBroadcaster(UDP_BROADCAST_PORT, UDP_BROADCAST_INTERVAL_MS, UDP_BROADCAST_MSG)
+    udp.start()
+
     render_dirty = True
 
     while True:
@@ -649,7 +703,20 @@ def main():
             led.show(state)
             render_dirty = False
 
-        time.sleep_ms(20)
+        # ---- UDP discovery ----
+        # 仅在无 client 连接时广播(1秒/次)
+        # 有 client 连上后自动停止广播
+        # 所有 client 断开后下次循环恢复广播
+        n_clients = len(state.clients)
+        udp_interval = UDP_BROADCAST_INTERVAL_MS
+        if n_clients == 0:
+            now_ms = time.ticks_ms()
+            if time.ticks_diff(now_ms, udp.last_announce_ms) >= udp_interval:
+                udp.last_announce_ms = now_ms
+                udp.announce(ip, TCP_PORT)
+        else:
+            # 当有 client 时, reset last_announce_ms, 以免断开后立即打了个送出
+            udp.last_announce_ms = time.ticks_ms() - udp_interval
 
 
 main()

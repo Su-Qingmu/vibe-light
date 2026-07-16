@@ -19,6 +19,14 @@ TRAIL_TAIL = 0.04
 # ============== TCP Server ==============
 TCP_PORT = 8888
 TCP_BACKLOG = 2
+
+# UDP 广播服务发现（断网也能找到 ESP32）
+UDP_BROADCAST_PORT = 5000
+UDP_BROADCAST_INTERVAL_MS = 1000
+UDP_BROADCAST_ENABLED = True
+UDP_BROADCAST_MSG = "vibe-light:v2"
+# Subnet used as broadcast target. 192.168.x.255. Fallback to 255.255.255.255.
+UDP_BROADCAST_ADDR = "255.255.255.255"
 TCP_TIMEOUT_MS = 50     # accept timeout，让 button loop 能跑
 
 # ============== Boot Button ==============
