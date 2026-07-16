@@ -1,0 +1,266 @@
+#!/usr/bin/env python3
+"""
+vld - Vibe Light Daemon
+
+保持一条到 ESP32 的 TCP 长连接,通过 unix socket 接受本地命令。
+解决 vl 每次 exec 新进程 → 新 socket → ESP32 永远在 CONNECTED 的问题。
+
+用法:
+  vld start                    # 启动 daemon (后台)
+  vld stop                     # 停止 daemon
+  vld status                   # 查看 daemon 状态
+"""
+import sys
+import os
+import socket
+import time
+import json
+import signal
+
+DAEMON_HOST = "192.168.0.236"
+DAEMON_PORT = 8888
+DAEMON_SOCK = "/tmp/vl-daemon.sock"
+DAEMON_PID_FILE = "/tmp/vl-daemon.pid"
+
+
+class VibeDaemon:
+    def __init__(self, host, port):
+        self.host = host
+        self.port = port
+        self.esp_sock = None
+        self.unix_sock = None
+        self.running = True
+
+    def connect_esp(self):
+        """连接到 ESP32, 长连接"""
+        if self.esp_sock is not None:
+            try:
+                self.esp_sock.getpeername()
+                return
+            except OSError:
+                try:
+                    self.esp_sock.close()
+                except Exception:
+                    pass
+                self.esp_sock = None
+
+        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        s.settimeout(5)
+        s.connect((self.host, self.port))
+        s.settimeout(None)
+        self.esp_sock = s
+
+    def send_to_esp(self, cmd, timeout=2):
+        """发送一条命令到 ESP32, 返回响应字符串"""
+        self.connect_esp()
+        try:
+            self.esp_sock.sendall((cmd + "\n").encode())
+        except (BrokenPipeError, ConnectionResetError, OSError):
+            self.esp_sock = None
+            self.connect_esp()
+            self.esp_sock.sendall((cmd + "\n").encode())
+
+        self.esp_sock.settimeout(timeout)
+        try:
+            resp = b""
+            while b"\n" not in resp:
+                chunk = self.esp_sock.recv(256)
+                if not chunk:
+                    raise ConnectionResetError("server closed")
+                resp += chunk
+            return resp.decode().strip()
+        except socket.timeout:
+            return "(timeout)"
+        finally:
+            self.esp_sock.settimeout(None)
+
+    def shutdown(self):
+        self.running = False
+        if self.unix_sock:
+            try:
+                self.unix_sock.close()
+            except Exception:
+                pass
+        if self.esp_sock:
+            try:
+                self.esp_sock.close()
+            except Exception:
+                pass
+        if os.path.exists(DAEMON_SOCK):
+            try:
+                os.unlink(DAEMON_SOCK)
+            except Exception:
+                pass
+        if os.path.exists(DAEMON_PID_FILE):
+            try:
+                os.unlink(DAEMON_PID_FILE)
+            except Exception:
+                pass
+
+    def handle_client(self, conn):
+        try:
+            conn.settimeout(5)
+            data = b""
+            while b"\n" not in data:
+                chunk = conn.recv(1024)
+                if not chunk:
+                    break
+                data += chunk
+            if not data:
+                return
+            cmd = data.decode().strip()
+            if cmd == "__PING__":
+                conn.sendall(b"PONG\n")
+                return
+            if cmd == "__STATUS__":
+                d = {
+                    "esp_connected": self.esp_sock is not None,
+                    "pid": os.getpid(),
+                    "uptime": time.time(),
+                }
+                conn.sendall((json.dumps(d) + "\n").encode())
+                return
+            if cmd == "__STOP__":
+                conn.sendall(b"OK stopping\n")
+                self.shutdown()
+                os._exit(0)
+
+            resp = self.send_to_esp(cmd)
+            conn.sendall((resp + "\n").encode())
+        except Exception as e:
+            try:
+                conn.sendall(("ERR " + str(e) + "\n").encode())
+            except Exception:
+                pass
+
+    def serve_unix(self):
+        """监听 unix socket,接受本地命令"""
+        if os.path.exists(DAEMON_SOCK):
+            os.unlink(DAEMON_SOCK)
+
+        self.unix_sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        self.unix_sock.bind(DAEMON_SOCK)
+        os.chmod(DAEMON_SOCK, 0o666)
+        self.unix_sock.listen(8)
+        self.unix_sock.settimeout(0.5)
+
+        with open(DAEMON_PID_FILE, "w") as f:
+            f.write(str(os.getpid()))
+
+        signal.signal(signal.SIGTERM, lambda *a: self.shutdown())
+        signal.signal(signal.SIGINT, lambda *a: self.shutdown())
+
+        print("[vld] listening on " + DAEMON_SOCK + " (pid=" + str(os.getpid()) + ")", flush=True)
+        print("[vld] ESP32 = " + self.host + ":" + str(self.port), flush=True)
+
+        try:
+            while self.running:
+                try:
+                    conn, _ = self.unix_sock.accept()
+                except socket.timeout:
+                    continue
+                except OSError:
+                    break
+                with conn:
+                    self.handle_client(conn)
+        finally:
+            self.shutdown()
+
+
+def cmd_daemon_start():
+    """以 daemon 模式运行"""
+    if os.path.exists(DAEMON_SOCK):
+        # 先试着 ping 一下,可能在跑
+        try:
+            s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            s.settimeout(2)
+            s.connect(DAEMON_SOCK)
+            s.sendall(b"__PING__\n")
+            resp = s.recv(64).decode().strip()
+            s.close()
+            if resp == "PONG":
+                print("vld 已在运行 (PID=" + str(os.getpid()) + ")")
+                return
+        except Exception:
+            pass
+        # 不响应,清理掉旧的 socket
+        try:
+            os.unlink(DAEMON_SOCK)
+        except Exception:
+            pass
+
+    pid = os.fork()
+    if pid > 0:
+        for _ in range(20):
+            time.sleep(0.1)
+            if os.path.exists(DAEMON_SOCK):
+                print("vld started (pid=" + str(pid) + ")")
+                return
+        print("vld 启动超时")
+    else:
+        os.setsid()
+        d = VibeDaemon(DAEMON_HOST, DAEMON_PORT)
+        d.serve_unix()
+
+
+def cmd_daemon_stop():
+    """通过 unix socket 发送停止命令"""
+    if not os.path.exists(DAEMON_SOCK):
+        print("vld 未运行")
+        return
+    try:
+        s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        s.settimeout(3)
+        s.connect(DAEMON_SOCK)
+        s.sendall(b"__STOP__\n")
+        print(s.recv(64).decode().strip())
+        s.close()
+    except Exception as e:
+        print("停止失败: " + str(e))
+        if os.path.exists(DAEMON_PID_FILE):
+            try:
+                pid = int(open(DAEMON_PID_FILE).read().strip())
+                os.kill(pid, signal.SIGTERM)
+                print("已发 SIGTERM 给 pid=" + str(pid))
+            except Exception as e2:
+                print("kill 失败: " + str(e2))
+
+
+def cmd_daemon_status():
+    """查 daemon 状态"""
+    if not os.path.exists(DAEMON_SOCK):
+        print("vld 未运行")
+        return
+    try:
+        s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        s.settimeout(3)
+        s.connect(DAEMON_SOCK)
+        s.sendall(b"__STATUS__\n")
+        resp = s.recv(1024).decode().strip()
+        d = json.loads(resp)
+        print("vld 运行中")
+        print("   pid:      " + str(d["pid"]))
+        print("   uptime:   " + str(round(time.time() - d["uptime"], 1)) + "s")
+        print("   esp 长连接: " + ("ok" if d["esp_connected"] else "down"))
+        s.close()
+    except Exception as e:
+        print("查询失败: " + str(e))
+
+
+def main():
+    if len(sys.argv) < 2:
+        print("用法: vld {start|stop|status}")
+        sys.exit(1)
+    cmd = sys.argv[1]
+    if cmd == "start":
+        cmd_daemon_start()
+    elif cmd == "stop":
+        cmd_daemon_stop()
+    elif cmd == "status":
+        cmd_daemon_status()
+    else:
+        print("未知命令: " + cmd)
+
+
+if __name__ == "__main__":
+    main()

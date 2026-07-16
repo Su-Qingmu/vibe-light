@@ -1,0 +1,13 @@
+[Unit]
+Description=Vibe Light Daemon (ESP32 TCP long-connection)
+After=network.target
+
+[Service]
+Type=forking
+ExecStart=/home/sqm-pi/bin/vld start
+ExecStop=/home/sqm-pi/bin/vld stop
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target
