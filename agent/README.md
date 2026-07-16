@@ -4,38 +4,73 @@
 
 跟 `pi5/vibelight.py`（TCP 客户端库）的区别：
 - **`pi5/vibelight.py`**：Python import 库，给 daemon / watcher 用
-- **`agent/vl` / `agent/vld`**：shell 命令，给 agent 在回复中快速调用（每次 exec ~50 tokens）
+- **`agent/vl` / `agent/vld` / `agent/vl-discover`**：shell 命令，给 agent 在回复中快速调用（每次 exec ~50 tokens）
 
-## `vl` — 单条命令 CLI
+## `vl` — 单条命令 CLI + UDP 发现
 
 ```bash
-vl thinking                       # 切到 thinking (默认 oc client)
+vl thinking                       # 切到 thinking (默认 oc client, 自动 UDP 发现 ESP32)
 vl oc.thinking                    # 指定 client
 vl busy                           # 切到 busy
 vl off                            # 全灭
 vl bright 80                      # 设亮度
 vl status                         # 查询 ESP32 状态
 vl ping                           # 健康检查
+vl --host 192.168.0.236 --no-discover ping  # 手动指定 IP,跳过发现
+VIBE_HOST=10.0.0.100 vl ping     # 环境变量覆盖
 vl help                           # 帮助
 ```
+
+**UDP 自动发现** 🆕：默认会听 UDP 5000 3 秒，发现 ESP32 后直连。
+适合 **ESP32 IP 变化**（路由器 DHCP 重发、换 WiFi 等场景）。
+多个 ESP32 在同一 WiFi 时只连第一个。
+
+发现顺序：**环境变量 `VIBE_HOST` → UDP 5000 广播 → 默认 IP `192.168.0.236`**
 
 **实现要点**：vl 单进程内复用 socket，但每次 `vl` exec 都是新进程，
 所以**单靠 vl 会让 ESP32 在 CONNECTED ↔ ACTIVE 之间跳**。
 解决：`vld` daemon。
 
+## `vl-discover` — 独立 ESP32 扫描器
+
+监听 UDP 5000 3 秒，打印所有看到的 vibe-light 设备：
+
+```bash
+vl-discover
+# Listening on UDP 5000 for vibe-light broadcasts (timeout=3.0s)...
+# [
+#   {
+#     "host": "192.168.0.236",
+#     "port": 8888,
+#     "version": "v2",
+#     "first_seen": 1784193733.0665832
+#   }
+# ]
+
+vl-discover --timeout 10    # 听 10 秒
+vl-discover --once          # 第一个包就到就退出
+```
+
+输出是 JSON，适合被其他脚本处理。
+
+**注意**：daemon 在跑时 ESP32 停止广播，scanner 会扫不到。
+需先 `vld stop` 再 `vl-discover`。
+
 ## `vld` — 长连接守护进程
 
 `vld` 维护一条到 ESP32 的 TCP 长连接，通过 unix socket 接受本地命令。
 所有 `vl` 调用都优先走 daemon，没有 daemon 时 fallback 直连。
+**启动 daemon 时 `pre-connect` ESP32** 🆕——所以开 daemon 后 ESP32 停止广播。
 
 ```bash
-vld start           # 后台启动
-vld stop            # 停止
+vld start           # 后台启动, pre-connect ESP32
+vld stop            # 停止, ESP32 恢复广播
 vld status          # 状态 + 长连接是否活着
 ```
 
 Unix socket: `/tmp/vl-daemon.sock`
 PID file: `/tmp/vl-daemon.pid`
+日志: `/tmp/vld.log`
 
 ### 开机自启
 
@@ -125,6 +160,8 @@ VIBE_HOST=10.0.0.100 vl status
 | 现象 | 原因 | 修法 |
 |---|---|---|
 | status 显示 `mode=connected` 不是 `active` | vl 直连,每次 exec 新 socket | 启动 `vld` daemon |
-| `vl ping` 超时 | ESP32 离线 | 检查 WiFi / 电源 / `vld status` 看 ESP 连接 |
+| `vl ping` 超时 | ESP32 离线 / IP 变了 | 先 `vl-discover` 看能不能扫到，再调 IP |
+| ESP32 IP 忘了 / 变了 | DHCP 重发 | 用 `vl-discover` 扫描后接 IP |
+| vl-discover 扫不到 | daemon 在跑,ESP32 停广播 | `vld stop`, 再扫 |
 | 灯一直不亮 | vl daemon 断了 / ESP32 在 disconnected | `vld restart` 或重启 ESP32 |
-| vl 命令 hang | daemon 不响应 | `vld stop && vld start` |
+| vl 命令 hang | daemon 不响应 | `vld stop && vld start` 看 `/tmp/vld.log` |
