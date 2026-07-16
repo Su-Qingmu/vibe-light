@@ -48,6 +48,9 @@ try:
         BOOT_PIN, BTN_DEBOUNCE_MS, BTN_LONGPRESS_MS, BTN_DOUBLECLICK_MS,
         CLIENT_BASE, COLORS, CLIENT_STATES,
         ANIMATED_STATES, ANIM_PALETTE, PEAK, TRAIL_TAIL,
+        LOADING_HEAD_BRIGHTNESS, LOADING_TAIL_BRIGHTNESS,
+        LOADING_STEP_MS, LOADING_RING_NUM,
+        ALARM_TIMEOUT_MS, ALARM_REST_RED, ALARM_REST_BLUE,
     )
 except ImportError:
     print("ERR: config.py not found", file=sys.stderr)
@@ -71,6 +74,7 @@ class State:
         self.last_flash_ms = 0
         self.clients = []
         self.client_bufs = {}
+        self.alarm_start_ms = 0   # alarm 启动时间, 0 表示未在 alarm
 
 
 # ============== LED + Animations ==============
@@ -151,6 +155,17 @@ class LED:
         now = time.ticks_ms()
         b = state.brightness
         s = state.state
+        # alarm 超时检查: 10s 后切到 D2-13 红 + D14-25 蓝 的安全静态色
+        if s == "alarm":
+            elapsed = time.ticks_diff(now, state.alarm_start_ms)
+            if state.alarm_start_ms and elapsed >= ALARM_TIMEOUT_MS:
+                # 已超时，渲染为静态红/蓝色（不再报警闪）
+                if state.alarm_start_ms != getattr(state, "_rest_marker", -1):
+                    state._rest_marker = state.alarm_start_ms
+                self._render_alarm_rest(b)
+                return
+        else:
+            state._rest_marker = None
         if   s == "thinking": self._anim_thinking(now, b)
         elif s == "coding":   self._anim_coding(now, b)
         elif s == "busy":     self._anim_busy(now, b)
@@ -158,6 +173,18 @@ class LED:
         elif s == "success":  self._anim_breath(now, b, ANIM_PALETTE["success"])
         elif s == "error":    self._anim_error(now, b)
         elif s == "alarm":    self._anim_alarm(now, b)
+        elif s == "loading":  self._anim_loading(now, b)
+
+    def _render_alarm_rest(self, b):
+        """alarm 超时后的安全静态色: D2-13 红 + D14-25 蓝"""
+        red_out  = self._scale(ALARM_REST_RED, b)
+        blue_out = self._scale(ALARM_REST_BLUE, b)
+        # idx 0..11 = D2..D13 = red
+        for i in range(0, 12):
+            self.np[i] = red_out
+        # idx 12..23 = D14..D25 = blue
+        for i in range(12, 24):
+            self.np[i] = blue_out
 
     def _anim_thinking(self, now, b):
         """高速彩虹旋转（环形，顺时针 = idx 增加方向）"""
@@ -275,7 +302,9 @@ class LED:
             self.np[i] = full if i % 2 == 0 else dim
 
     def _anim_alarm(self, now, b):
-        """红蓝全灯带快闪（含 D2）"""
+        """红蓝全灯带快闪（含 D2）+ 10s 超时后切到安全静态色
+        超时后: D2-13 红 + D14-25 蓝 (D2=0 idx, D13=11, D14=12, D25=23)
+        """
         period = 200
         p = (now % period) / period
         on = p < 0.5
@@ -287,6 +316,51 @@ class LED:
             out = (0, 0, 0)
         for i in range(0, self.count):
             self.np[i] = out
+
+    def _anim_loading(self, now, b):
+        """绿色顺时针拖尾扩展动画（类似网页 loading 图标）。
+        
+        设计：head (前沿, 最亮) 始终顺时针推进, 拖尾向 head 后方 (counter-clockwise)。
+        阶段 1 拖尾扩展 (abs_phase 0..11 = 12 帧):
+            帧 0:   D2 (1 LED, head 在 D2)
+            帧 5:   D2..D7 (6 LEDs, head 在 D7, tail 在 D2)
+            帧 11:  D2..D13 (12 LEDs, head 在 D13, tail 在 D2)
+        阶段 2 持续旋转 (abs_phase >= 12): head 顺时针继续推进, 拖尾保持 12
+            类似环形进度条持续顺时针旋转 (不重置, 拖尾不会消失)
+        亮度：head = LOADING_HEAD_BRIGHTNESS (0.50), tail = LOADING_TAIL_BRIGHTNESS (0.10)
+        """
+        # 全部清零
+        for i in range(0, self.count):
+            self.np[i] = (0, 0, 0)
+
+        LED_NUM = self.count             # 24
+        STEP_MS = LOADING_STEP_MS        # 140ms 每帧
+        RING_NUM = LOADING_RING_NUM      # 12
+
+        # 用绝对时间, 不 modulo. 阶段 1 只发生一次, 之后永久旋转.
+        abs_phase = now // STEP_MS
+        head_idx = abs_phase % LED_NUM
+        if abs_phase < RING_NUM:
+            trail_len = abs_phase + 1    # 1..12
+        else:
+            trail_len = RING_NUM         # 永久 12 (拖尾不消失)
+
+        color_g = (0, 255, 0)
+        # 亮度插值: head (j=0) = HEAD, tail (j=trail_len-1) = TAIL
+        head_b = LOADING_HEAD_BRIGHTNESS
+        tail_b = LOADING_TAIL_BRIGHTNESS
+        denom = max(trail_len - 1, 1)
+        for j in range(trail_len):
+            # 拖尾从 head 向后方 (counter-clockwise) 扩展
+            idx = (head_idx - j) % LED_NUM
+            s = tail_b + (head_b - tail_b) * (1.0 - j / denom)
+            rgb = (
+                int(color_g[0] * s),
+                int(color_g[1] * s),
+                int(color_g[2] * s),
+            )
+            self.np[idx] = self._scale(rgb, b)
+
 
 
 # ============== Button ==============
@@ -427,6 +501,11 @@ def cmd_state(state, args):
     state.client = client
     state.state = st
     state.temp_override = None
+    # alarm 计时: 只在从非 alarm 切到 alarm 时启动计时
+    if st == "alarm":
+        state.alarm_start_ms = time.ticks_ms()
+    else:
+        state.alarm_start_ms = 0
     is_anim = " ANIM" if st in ANIMATED_STATES else ""
     return f"OK state={client}.{st}{is_anim}"
 
@@ -632,8 +711,10 @@ def main():
                 render_dirty = True
             print(f"TCP: client {addr} (total={len(state.clients)})")
         except OSError as e:
+            # 静默 EAGAIN - 每帧出现, 太吵
             if str(e) != 'EAGAIN':
                 print(f"TCP accept err: {e}")
+            # EAGAIN 是正常的 "没 client 连接" 静默
         except Exception as e:
             print(f"TCP accept fatal: {e}")
 

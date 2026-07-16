@@ -34,7 +34,7 @@ DEFAULT_TIMEOUT = 2.0
 # 允许的状态（动画 + 静态）
 VALID_STATES = {
     # 动画状态
-    "thinking", "coding", "busy", "waiting", "success", "error", "alarm",
+    "thinking", "coding", "busy", "waiting", "success", "error", "alarm", "loading",
     # 静态状态
     "off", "idle", "permission", "done", "question",
 }
@@ -271,7 +271,7 @@ vl - Vibe Light CLI
   vl help                 # 帮助
 
 允许的状态:
-  动画: thinking coding busy waiting success error alarm
+  动画: thinking coding busy waiting success error alarm loading
   静态: off idle permission done question
 """)
 
