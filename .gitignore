@@ -1,0 +1,36 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# 编辑器 / IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+
+# 中间 / 备份（项目历史不需保留）
+*.bak
+*.new
+*.tmp
+
+# 临时文件
+/tmp/
+*.tmp
+
+# 环境
+.env
+.venv/
+venv/
+
+# MicroPython 上传工具产生的临时文件
+/tmp_*_from_dev.py
+
+# 固件二进制（太大，单独 release 放）
+*.bin
+
+# 日志
+logs/
+*.log
