@@ -33,8 +33,10 @@ DEFAULT_TIMEOUT = 2.0
 
 VALID_STATES = {
     "thinking", "coding", "busy", "waiting", "success", "error", "alarm",
-    "off", "idle", "permission", "done", "question",
+    "idle", "permission", "done", "question",
 }
+# off 已弃用: 跳过不发, LED 保持上次状态
+SKIP_STATES = {"off"}
 VALID_CLIENTS = {"oc", "oo", "cc"}
 
 # Windows daemon: TCP localhost:8889
@@ -169,6 +171,9 @@ def cmd_state(host, port, args):
     if client not in VALID_CLIENTS:
         print(f"❌ client 必须是 {VALID_CLIENTS} 之一")
         sys.exit(1)
+    if state in SKIP_STATES:
+        print(f"(skip: '{state}' 状态已禁用, LED 保持上次状态)")
+        return
     if state not in VALID_STATES:
         print(f"❌ state 必须是 {VALID_STATES} 之一")
         sys.exit(1)
@@ -215,8 +220,9 @@ def cmd_ping(host, port, args):
 
 
 def cmd_off(host, port, args):
-    resp = send_cmd(host, port, f"STATE {DEFAULT_CLIENT}.off")
-    print(resp)
+    # off 已弃用: 不发命令, LED 保持上次状态
+    print("(skip: 'off' 已禁用, LED 保持上次状态)")
+    return
 
 
 def cmd_help(host, port, args):

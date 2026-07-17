@@ -118,6 +118,10 @@ class VibeDaemon:
             if not data:
                 return
             cmd = data.decode().strip()
+            # 跳过 'off' 状态: LED 保持上次, 不发 ESP32
+            if cmd.startswith("STATE ") and cmd.endswith(".off"):
+                conn.sendall(b"SKIP off disabled\n")
+                return
             if cmd == "__PING__":
                 conn.sendall(b"PONG\n")
                 return

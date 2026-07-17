@@ -25,7 +25,7 @@ const STATE_MAP: Record<string, string> = {
   "session:compact:before": "thinking",
   "session:compact:after": "idle",
   "gateway:startup": "idle",
-  "gateway:shutdown": "off",
+  // gateway:shutdown 已弃用 off, 跳过让 LED 保持上次
 };
 
 const handler = async (event: any) => {

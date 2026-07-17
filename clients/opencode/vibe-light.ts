@@ -33,7 +33,7 @@ const STATE_MAP: Record<string, string> = {
   "session.idle":        "idle",
   "session.created":     "idle",
   "session.compacted":   "idle",
-  "session.deleted":     "off",
+  // session.deleted 已弃用 off, 跳过让 LED 保持上次
   "session.error":       "error",
   "session.diff":        "coding",
   "session.updated":     "thinking",
