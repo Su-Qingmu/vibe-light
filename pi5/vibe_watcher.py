@@ -49,11 +49,14 @@ class StateAggregator:
             self.states["oo"]["current"] = (state, ts)
 
     def current(self, client):
-        """返回 client 当前应该显示的状态"""
+        """返回 client 当前应该显示的状态
+
+        30s 没更新 → 'idle' (不用 'off', 让 LED 保持上次有意义的动画)
+        """
         now = time.time()
         sessions = self.states.get(client, {})
         if not sessions:
-            return "off" if client == "oc" else "idle"
+            return "idle"  # 改: 不再 fallback 到 off
 
         # 取最近更新的 session，过滤超时的
         latest = None
@@ -65,7 +68,7 @@ class StateAggregator:
 
         if latest:
             return latest[1]
-        return "off" if client == "oc" else "idle"
+        return "idle"  # 改: 不再 fallback 到 off
 
     def load_file(self, path: Path):
         try:
@@ -130,6 +133,9 @@ def main():
         # 三个 client 都查一遍
         for c in ["oc", "oo", "cc"]:
             cur = agg.current(c)
+            # 'off' 状态已禁用: 跳过推送, LED 保持上次
+            if cur == "off":
+                continue
             if cur != last_sent[c]:
                 cmd = f"STATE {c}.{cur}"
                 resp = client._send(cmd)

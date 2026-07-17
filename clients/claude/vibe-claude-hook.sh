@@ -28,7 +28,7 @@ case "$EVENT" in
     Stop)                STATE="done" ;;
     StopFailure)         STATE="error" ;;
     SessionStart)        STATE="idle" ;;
-    SessionEnd)          STATE="off" ;;
+    SessionEnd)          exit 0 ;;               # off 已弃用: 跳过 SessionEnd, LED 保持上次
     SubagentStart)       STATE="thinking" ;;
     SubagentStop)        STATE="coding" ;;
     *)                   STATE="idle" ;;
