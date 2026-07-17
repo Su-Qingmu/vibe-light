@@ -2,17 +2,18 @@
 
 AI 编程客户端状态灯 — 通过 WiFi 控制 24 颗 WS2812 LED 环形灯条。
 
-支持 8 个语义状态、3 个 AI 客户端前缀（OpenClaw / OpenCode / Claude Code），
+支持 9 个语义状态、3 个 AI 客户端前缀（OpenClaw / OpenCode / Claude Code），
 每个状态在环形 24 颗上跑独立动画。
 
 ## ✨ 特性
 
-- **8 个动画状态**：thinking / coding / busy / waiting / success / error / alarm / off
+- **9 个动画状态**：thinking / coding / busy / waiting / success / error / alarm / loading
 - **3 个客户端颜色映射**：oc / oo / cc 各有自己的 base 色
 - **环形 24 颗**全参与动画（D2 - D25），无静默 LED
 - **TCP 长连接保活**：自动识别 timeout 异常（MicroPython 1.28 兼容）
 - **WiFi 自动重连**：掉线后 10s 内自动恢复
-- **Boot 按钮**：单击循环 client / 双击切 off / 长按 reboot
+- **UDP 服务发现** 🆕：ESP32 每秒广播自身 IP:port，ESP32 IP 变了 client 自动发现
+- **Boot 按钮**：单击循环 client / 长按 reboot
 
 ## 🏗 架构
 
@@ -101,8 +102,8 @@ python3 test_states.py
 
 ```bash
 # 安装到 PATH
-cp agent/vl agent/vld ~/bin/
-chmod +x ~/bin/vl ~/bin/vld
+cp agent/vl agent/vld agent/vl-discover ~/bin/
+chmod +x ~/bin/vl ~/bin/vld ~/bin/vl-discover
 
 # 启动 daemon（保持 ESP32 TCP 长连接）
 vld start
@@ -111,9 +112,51 @@ vld start
 vl busy       # 收到任务,开始干活
 vl success    # 这轮完成
 vl error      # 出错
+
+# 扫描同 WiFi 下所有 ESP32
+vl-discover
 ```
 
+`vl` 默认通过 UDP 5000 自动发现 ESP32，IP 变了也能找到。
+启动 daemon 后 ESP32 停广播（避免噪音），关 daemon 后 ESP32 恢复广播。
+
 详见 `agent/README.md`。
+
+### 6. ESP32 IP 自动发现 🆕
+
+ESP32 IP 会因为路由器 DHCP 重发而变化，不需要手动 hardcode IP：
+
+```bash
+# 扫描所有可访问的 ESP32
+vl-discover
+# [
+#   {
+#     "host": "192.168.0.236",
+#     "port": 8888,
+#     "version": "v2"
+#   }
+# ]
+
+# vl 命令自动用 UDP 发现的 IP
+vl ping      # → PONG
+vl thinking  # 切状态
+
+# 手动指定（debug 用）
+vl --host 192.168.0.236 --no-discover ping
+```
+
+**UDP 包格式**（ESP32 发出的）：
+
+```
+vibe-light:v2 ip=192.168.0.236 tcp_port=8888
+```
+
+**广播触发时机**：
+- ESP32 启动后默认在广播（无 client 时）
+- 有 TCP client 连接后立即停止广播
+- 所有 client 断开后恢复广播
+
+**vld daemon** 启动时 `pre-connect` ESP32，所以起 daemon 后 ESP32 立刻停广播。
 
 ## 🎨 动画状态表
 
@@ -126,7 +169,7 @@ vl error      # 出错
 | `success`  | 绿色呼吸 | 全灯同步 sin 呼吸 | 2s |
 | `error`    | 红↔橙快闪 + 抖动 | 偶/奇位错位 + 100ms 切色 | 500ms |
 | `alarm`    | 红蓝全闪 | 200ms 全闪 | 200ms |
-| `off`      | 全灭 | — | — |
+| `loading`  | 绿色顺时针拖尾 | head=0.50/tail=0.10，先扩到 12 颗再持续旋转 | 140ms/帧 |
 
 **client 颜色前缀**：
 
@@ -146,7 +189,7 @@ STATE <client>.<state>     → OK state=<client>.<state> ANIM
 CLIENT <oc|oo|cc>          → OK client=<client>
 BRIGHT <0-100>             → OK bright=<n>%
 COLOR <r> <g> <b>          → OK override=<r>,<g>,<b>
-STATUS                     → {"client":"oc","state":"off",...}
+STATUS                     → {"client":"oc","state":"idle",...}
 HELP                       → 帮助文本
 ```
 
@@ -165,7 +208,6 @@ HELP                       → 帮助文本
 | 操作 | 行为 |
 |---|---|
 | 单击 | 循环切换 client（OC → OO → CC → OC）|
-| 双击 | 切到 off 状态 |
 | 长按 ≥2s | 软重启 ESP32 |
 
 ## 📦 部署环境

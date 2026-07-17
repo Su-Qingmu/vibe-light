@@ -1,0 +1,88 @@
+#!/usr/bin/env python3
+"""
+vl-discover - 通过 UDP 广播发现 ESP32
+
+监听端口 5000, 接收 ESP32 的 announcement 消息。
+打印发现的所有 vibe-light 设备。
+
+用法:
+  vl-discover              # 监听 10 秒, 打印所有看到的设备
+  vl-discover --once       # 收到第一个就退出
+  vl-discover --timeout 5  # 自定义超时(秒)
+"""
+import sys
+import os
+import socket
+import time
+import json
+import argparse
+
+UDP_PORT = 5000
+
+
+def parse_msg(data):
+    """解析 'vibe-light:v2 ip=... tcp_port=...'"""
+    text = data.decode().strip()
+    parts = text.split()
+    if not parts or not parts[0].startswith("vibe-light:"):
+        return None
+    d = {"version": parts[0].split(":", 1)[1]}
+    for p in parts[1:]:
+        if "=" in p:
+            k, v = p.split("=", 1)
+            d[k] = v
+    d["discovered_at"] = time.time()
+    return d
+
+
+def listen_once(timeout):
+    """Listen for any UDP packet, return immediately on first"""
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    s.bind(("0.0.0.0", UDP_PORT))
+    s.settimeout(timeout)
+    start = time.time()
+    found = {}
+    try:
+        while time.time() - start < timeout:
+            try:
+                data, addr = s.recvfrom(1024)
+            except socket.timeout:
+                break
+            d = parse_msg(data)
+            if d:
+                host = d.get("ip", addr[0])
+                port = int(d.get("tcp_port", 8888))
+                key = f"{host}:{port}"
+                if key not in found:
+                    found[key] = {"host": host, "port": port, "version": d.get("version"), "first_seen": d.get("discovered_at")}
+    finally:
+        s.close()
+    return found
+
+
+def main():
+    p = argparse.ArgumentParser(description="Discover ESP32 via UDP broadcast")
+    p.add_argument("--once", action="store_true", help="Stop after first device found")
+    p.add_argument("--timeout", type=float, default=10.0, help="Listen timeout (seconds)")
+    args = p.parse_args()
+
+    print(f"Listening on UDP {UDP_PORT} for vibe-light broadcasts (timeout={args.timeout}s)...", file=sys.stderr)
+    found = listen_once(args.timeout)
+
+    if args.once and found:
+        # return on first
+        for key, dev in found.items():
+            print(json.dumps(dev))
+            return 0
+
+    if not found:
+        print("No vibe-light devices found.", file=sys.stderr)
+        return 1
+
+    print(json.dumps(list(found.values()), indent=2))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

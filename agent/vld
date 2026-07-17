@@ -147,6 +147,13 @@ class VibeDaemon:
         with open(DAEMON_PID_FILE, "w") as f:
             f.write(str(os.getpid()))
 
+        # Pre-connect to ESP32 so the long connection is alive from boot
+        try:
+            self.connect_esp()
+            print("[vld] pre-connected to ESP32", flush=True)
+        except Exception as e:
+            print("[vld] pre-connect failed: " + str(e), flush=True)
+
         signal.signal(signal.SIGTERM, lambda *a: self.shutdown())
         signal.signal(signal.SIGINT, lambda *a: self.shutdown())
 
@@ -199,8 +206,20 @@ def cmd_daemon_start():
         print("vld 启动超时")
     else:
         os.setsid()
+        # Redirect output to log file for debugging
+        log_path = "/tmp/vld.log"
+        try:
+            log = open(log_path, "a")
+            os.dup2(log.fileno(), sys.stdout.fileno())
+            os.dup2(log.fileno(), sys.stderr.fileno())
+        except Exception:
+            pass
         d = VibeDaemon(DAEMON_HOST, DAEMON_PORT)
-        d.serve_unix()
+        try:
+            d.serve_unix()
+        except Exception as e:
+            sys.stderr.write("CRASH: " + str(e) + "\n")
+            sys.exit(1)
 
 
 def cmd_daemon_stop():

@@ -16,9 +16,23 @@ PEAK = 0.50             # 全局动画峰值 50%（拖尾该暗就暗）
 # 拖尾尾巴最低亮度（相对主色）
 TRAIL_TAIL = 0.04
 
+# loading 灯效拖尾亮度 (s = 相对主色的系数, 0-1)
+LOADING_HEAD_BRIGHTNESS = 0.50  # 首灯 (head, 最亮)
+LOADING_TAIL_BRIGHTNESS = 0.10  # 尾灯 (tail, 最暗)
+LOADING_STEP_MS = 140           # 每帧 140ms
+LOADING_RING_NUM = 12           # 拖尾最大长度 = 半数灯 (LED_COUNT // 2)
+
 # ============== TCP Server ==============
 TCP_PORT = 8888
 TCP_BACKLOG = 2
+
+# UDP 广播服务发现（断网也能找到 ESP32）
+UDP_BROADCAST_PORT = 5000
+UDP_BROADCAST_INTERVAL_MS = 1000
+UDP_BROADCAST_ENABLED = True
+UDP_BROADCAST_MSG = "vibe-light:v2"
+# Subnet used as broadcast target. 192.168.x.255. Fallback to 255.255.255.255.
+UDP_BROADCAST_ADDR = "255.255.255.255"
 TCP_TIMEOUT_MS = 50     # accept timeout，让 button loop 能跑
 
 # ============== Boot Button ==============
@@ -43,7 +57,7 @@ CLIENT_BASE = {
 ANIMATED_STATES = {
     "thinking", "coding",
     "busy", "waiting", "success",
-    "error", "alarm",
+    "error", "alarm", "loading",
 }
 
 # 各状态用于动画的固定主色（不依赖 client）
@@ -55,8 +69,16 @@ ANIM_PALETTE = {
     "waiting":  (255, 0, 0),     # 用户定义：红
     "success":  (0, 255, 0),     # 用户定义：绿
     "error":    (255, 40, 0),    # 用户定义：红→橙主色
-    "alarm":    None,            # 红蓝交替
+    "alarm":    None,            # 200ms 红蓝全闪 + 10s 超时
+    "loading":  None,            # 绿色顺时针拖尾扩展到一半 + 持续旋转
 }
+
+# alarm 超时(10s 后切到安全静态色)
+ALARM_TIMEOUT_MS = 10000
+
+# alarm 超时后的安全静态色: D2-13 红 + D14-25 蓝 (静态)
+ALARM_REST_RED  = (255, 0, 0)
+ALARM_REST_BLUE = (0, 0, 255)
 
 # (client, state) -> RGB (静态色 / 颜色覆写时用)
 COLORS = {
@@ -72,6 +94,7 @@ COLORS = {
     ("oc", "waiting"):    (255, 0, 0),
     ("oc", "success"):    (0, 255, 0),
     ("oc", "alarm"):      (255, 0, 0),
+    ("oc", "loading"):    (0, 255, 0),
 
     # ---- OpenCode ----
     ("oo", "off"):        (0, 0, 0),
@@ -85,6 +108,7 @@ COLORS = {
     ("oo", "waiting"):    (255, 0, 0),
     ("oo", "success"):    (0, 255, 0),
     ("oo", "alarm"):      (255, 0, 0),
+    ("oo", "loading"):    (0, 255, 0),
 
     # ---- Claude Code ----
     ("cc", "off"):        (0, 0, 0),
@@ -99,14 +123,15 @@ COLORS = {
     ("cc", "waiting"):    (255, 0, 0),
     ("cc", "success"):    (0, 255, 0),
     ("cc", "alarm"):      (255, 0, 0),
+    ("cc", "loading"):    (0, 255, 0),
 }
 
 # 每个 client 允许的状态
 CLIENT_STATES = {
     "oc": {"off", "idle", "thinking", "coding", "permission", "error", "done",
-           "busy", "waiting", "success", "alarm"},
+           "busy", "waiting", "success", "alarm", "loading"},
     "oo": {"off", "idle", "thinking", "busy", "permission", "error", "done",
-           "coding", "waiting", "success", "alarm"},
+           "coding", "waiting", "success", "alarm", "loading"},
     "cc": {"off", "idle", "thinking", "coding", "permission", "error", "done",
-           "question", "busy", "waiting", "success", "alarm"},
+           "question", "busy", "waiting", "success", "alarm", "loading"},
 }
