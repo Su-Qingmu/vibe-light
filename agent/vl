@@ -84,7 +84,10 @@ def discover_esp():
                 data, addr = s.recvfrom(1024)
             except socket.timeout:
                 break
-            text = data.decode().strip()
+            try:
+                text = data.decode().strip()
+            except UnicodeDecodeError:
+                continue
             if text.startswith("vibe-light:"):
                 # Format: "vibe-light:v2 ip=... tcp_port=8888"
                 parts = text.split()
