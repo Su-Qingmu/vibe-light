@@ -28,45 +28,54 @@ const STATE_FILE = "/tmp/vibe/opencode-current.json";
 
 // OpenCode SDK event types → vibe-light state
 // Reference: https://opencode.ai/docs/plugins#events
+//
+// 8 灯效语义:
+//   loading  - 收到用户/系统/内部信息
+//   thinking - agent 推理中
+//   coding   - 写代码/文件
+//   busy     - 调用工具
+//   waiting  - 等用户决策/输入
+//   success  - 完成
+//   error    - 失败
+//   alarm    - 安全告警/权限请求
 const STATE_MAP: Record<string, string> = {
   // ---- Session ----
-  "session.idle":        "idle",
-  "session.created":     "idle",
-  "session.compacted":   "idle",
+  "session.idle":        "success",   // 会话回到 idle = 这一轮完成
+  "session.created":     "loading",   // 收到新会话
+  "session.compacted":   "loading",   // compact 是收到系统消息
   // session.deleted 已弃用 off, 跳过让 LED 保持上次
-  "session.error":       "error",
-  "session.diff":        "coding",
-  "session.updated":     "thinking",
-  // session.status: handle in code (data has status field)
+  "session.error":       "error",     // 失败
+  "session.diff":        "coding",    // 写代码 (diff 出来)
+  "session.updated":     "thinking",  // 推理中
 
   // ---- Tool ----
-  "tool.execute.before": "coding",
-  "tool.execute.after":  "coding",
+  "tool.execute.before": "busy",      // 即将调用工具
+  "tool.execute.after":  "busy",      // 工具刚返回
 
   // ---- Message ----
-  "message.updated":       "thinking",
+  "message.updated":       "thinking",  // 消息流更新 = 推理
   "message.part.updated":  "thinking",
   "message.part.removed":  "thinking",
   "message.removed":       "thinking",
 
   // ---- Permission ----
-  "permission.asked":   "permission",
-  "permission.replied": "idle",
+  "permission.asked":   "alarm",      // 权限请求 = 告警
+  "permission.replied": "success",    // 用户已批, 完成
 
   // ---- Command ----
   "command.executed": "thinking",
 
   // ---- TUI ----
-  "tui.prompt.append":   "thinking",
+  "tui.prompt.append":   "loading",   // 用户输入
   "tui.command.execute": "thinking",
   "tui.toast.show":      "idle",
 
   // ---- File ----
-  "file.edited":           "coding",
+  "file.edited":           "coding",   // 文件改动
   "file.watcher.updated":  "idle",
 
   // ---- Misc ----
-  "server.connected":      "idle",
+  "server.connected":      "loading",
   "installation.updated":  "idle",
   "lsp.client.diagnostics":"idle",
   "lsp.updated":           "idle",
@@ -123,7 +132,7 @@ function mapEvent(event: any): string {
   if (type === "session.status") {
     const status = event?.data?.sessionStatus ?? event?.data?.status;
     if (status === "busy" || status === "running") return "busy";
-    if (status === "idle") return "idle";
+    if (status === "idle") return "success";  // 改: session idle = 成功
     return "idle";
   }
 

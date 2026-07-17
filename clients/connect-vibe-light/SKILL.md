@@ -95,11 +95,22 @@ python "$DAEMON" stop
 ```bash
 python "agent/vl_win.py" cc.thinking     # Windows
 python "agent/vl" cc.thinking            # Linux
-
-# 状态白名单 (off 已禁用):
-# thinking / coding / busy / waiting / success / error / alarm
-# idle / permission / done / question
 ```
+
+### 8 灯效语义
+
+| 灯效 | 语义 | 自动触发 (hook 事件) |
+|---|---|---|
+| `loading` | 收到用户/系统/内部信息 | UserPromptSubmit, SessionStart, SubagentStart, session.created, tui.prompt.append |
+| `thinking` | agent 推理中 | message.updated, session.updated, message.part.* |
+| `coding` | 写代码/文件 | session.diff, file.edited |
+| `busy` | 调用工具 (WebSearch/Bash) | PreToolUse, PostToolUse, tool.execute.before/after, session.status=busy |
+| `waiting` | 等用户决策/输入 (plan mode) | Notification (AskUserQuestion) |
+| `success` | 完成 | Stop, session.idle, permission.replied |
+| `error` | 失败 | StopFailure, session.error |
+| `alarm` | 安全告警/权限请求 | PermissionRequest, permission.asked |
+
+**off 已禁用** — LED 永远保持最后有意义状态.
 
 ## 失败处理
 

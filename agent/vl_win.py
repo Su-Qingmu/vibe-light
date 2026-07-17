@@ -32,7 +32,9 @@ DEFAULT_CLIENT = "oc"
 DEFAULT_TIMEOUT = 2.0
 
 VALID_STATES = {
-    "thinking", "coding", "busy", "waiting", "success", "error", "alarm",
+    # 8 动画状态
+    "thinking", "coding", "busy", "waiting", "success", "error", "alarm", "loading",
+    # 静态状态
     "idle", "permission", "done", "question",
 }
 # off 已弃用: 跳过不发, LED 保持上次状态
@@ -169,13 +171,13 @@ def cmd_state(host, port, args):
         client, state = DEFAULT_CLIENT, target
 
     if client not in VALID_CLIENTS:
-        print(f"❌ client 必须是 {VALID_CLIENTS} 之一")
+        print(f"[ERR] client must be one of {VALID_CLIENTS}")
         sys.exit(1)
     if state in SKIP_STATES:
-        print(f"(skip: '{state}' 状态已禁用, LED 保持上次状态)")
+        print(f"(skip: '{state}' disabled, LED keeps last state)")
         return
     if state not in VALID_STATES:
-        print(f"❌ state 必须是 {VALID_STATES} 之一")
+        print(f"[ERR] state must be one of {VALID_STATES}")
         sys.exit(1)
 
     resp = send_cmd(host, port, f"STATE {client}.{state}")

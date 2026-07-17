@@ -18,20 +18,28 @@ fi
 EVENT=$(echo "$INPUT" | jq -r '.hook_event_name // "unknown"')
 SESSION=$(echo "$INPUT" | jq -r '.session_id // "unknown"')
 
-# 状态映射
+# 状态映射 (8 个灯效)
+#   loading  - 收到用户/系统/内部信息
+#   busy     - 调用工具 (WebSearch, Bash, ...)
+#   waiting  - 等用户决策/输入 (plan mode, AskUserQuestion)
+#   success  - 完成
+#   error    - 失败
+#   alarm    - 安全告警/权限请求
+#   thinking - agent 推理中 (Claude hooks 无直接事件, 不会自动触发)
+#   coding   - agent 写代码 (Claude hooks 无直接事件, 不会自动触发)
 case "$EVENT" in
-    UserPromptSubmit)    STATE="thinking" ;;
-    PreToolUse)          STATE="coding" ;;
-    PostToolUse)         STATE="coding" ;;
-    PermissionRequest)   STATE="permission" ;;
-    Notification)        STATE="question" ;;     # AskUserQuestion 类型的通知
-    Stop)                STATE="done" ;;
-    StopFailure)         STATE="error" ;;
-    SessionStart)        STATE="idle" ;;
-    SessionEnd)          exit 0 ;;               # off 已弃用: 跳过 SessionEnd, LED 保持上次
-    SubagentStart)       STATE="thinking" ;;
-    SubagentStop)        STATE="coding" ;;
-    *)                   STATE="idle" ;;
+    UserPromptSubmit)    STATE="loading" ;;      # 用户发来消息
+    PreToolUse)          STATE="busy" ;;          # 即将调用工具
+    PostToolUse)         STATE="busy" ;;          # 工具刚返回
+    PermissionRequest)   STATE="alarm" ;;         # 权限请求 (Bash/Dangerous)
+    Notification)        STATE="waiting" ;;       # AskUserQuestion 等待用户选
+    Stop)                STATE="success" ;;       # 本轮完成
+    StopFailure)         STATE="error" ;;         # 本轮失败
+    SessionStart)        STATE="loading" ;;       # 会话开始 (收到系统消息)
+    SessionEnd)          exit 0 ;;               # off 已弃用: 跳过 SessionEnd
+    SubagentStart)       STATE="loading" ;;       # 子 agent 启动 (内部消息)
+    SubagentStop)        STATE="busy" ;;          # 子 agent 完事, 回到主任务
+    *)                   STATE="idle" ;;          # 兜底
 esac
 
 mkdir -p /tmp/vibe

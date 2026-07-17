@@ -21,6 +21,7 @@ import time
 import json
 import signal
 import subprocess
+import threading
 from pathlib import Path
 
 # ============== Config ==============
@@ -38,15 +39,21 @@ DAEMON_LOG_FILE = str(_RUNTIME_DIR / "vl-daemon-win.log")
 
 
 class VibeDaemon:
+    # 收到 loading 后, 多少秒没下个事件就推断为 thinking
+    THINKING_TIMEOUT_S = 1.5
+
     def __init__(self, host, port):
         self.host = host
         self.port = port
         self.esp_sock = None
+        self.esp_lock = threading.Lock()        # 保护 esp_sock 访问
         self.local_sock = None
         self.running = True
+        self.thinking_timer = None             # threading.Timer
+        self.thinking_pending = None           # (client, state) tuple
 
     def connect_esp(self):
-        """连接到 ESP32, 长连接"""
+        """连接到 ESP32, 长连接 (调用方需持 esp_lock)"""
         if self.esp_sock is not None:
             try:
                 self.esp_sock.getpeername()
@@ -65,31 +72,63 @@ class VibeDaemon:
         self.esp_sock = s
 
     def send_to_esp(self, cmd, timeout=2):
-        """发送一条命令到 ESP32, 返回响应字符串"""
-        self.connect_esp()
-        try:
-            self.esp_sock.sendall((cmd + "\n").encode())
-        except (BrokenPipeError, ConnectionResetError, OSError):
-            self.esp_sock = None
+        """发送一条命令到 ESP32, 返回响应字符串 (线程安全)"""
+        with self.esp_lock:
             self.connect_esp()
-            self.esp_sock.sendall((cmd + "\n").encode())
+            try:
+                self.esp_sock.sendall((cmd + "\n").encode())
+            except (BrokenPipeError, ConnectionResetError, OSError):
+                self.esp_sock = None
+                self.connect_esp()
+                self.esp_sock.sendall((cmd + "\n").encode())
 
-        self.esp_sock.settimeout(timeout)
-        try:
-            resp = b""
-            while b"\n" not in resp:
-                chunk = self.esp_sock.recv(256)
-                if not chunk:
-                    raise ConnectionResetError("server closed")
-                resp += chunk
-            return resp.decode().strip()
-        except socket.timeout:
-            return "(timeout)"
-        finally:
-            self.esp_sock.settimeout(None)
+            self.esp_sock.settimeout(timeout)
+            try:
+                resp = b""
+                while b"\n" not in resp:
+                    chunk = self.esp_sock.recv(256)
+                    if not chunk:
+                        raise ConnectionResetError("server closed")
+                    resp += chunk
+                return resp.decode().strip()
+            except socket.timeout:
+                return "(timeout)"
+            finally:
+                self.esp_sock.settimeout(None)
+
+    # ============== Thinking Timer ==============
+    # 当收到 STATE cc.loading 时, 启动定时器. 如果 THINKING_TIMEOUT_S 内
+    # 没收到下个事件 (说明 model 还在 thinking), 主动推 STATE cc.thinking.
+    # 收到任何其他 STATE 时取消定时器 (说明已经发生新事件了).
+
+    def _cancel_thinking(self):
+        if self.thinking_timer is not None:
+            self.thinking_timer.cancel()
+            self.thinking_timer = None
+            self.thinking_pending = None
+
+    def _start_thinking(self, client):
+        self._cancel_thinking()
+        self.thinking_pending = (client, "thinking")
+        t = threading.Timer(self.THINKING_TIMEOUT_S, self._fire_thinking)
+        t.daemon = True
+        self.thinking_timer = t
+        t.start()
+
+    def _fire_thinking(self):
+        if self.thinking_pending:
+            client, state = self.thinking_pending
+            self.thinking_timer = None
+            self.thinking_pending = None
+            try:
+                resp = self.send_to_esp(f"STATE {client}.{state}")
+                print(f"[vld_win] AUTO: -> STATE {client}.{state} (no event in {self.THINKING_TIMEOUT_S}s) -> {resp}", flush=True)
+            except Exception as e:
+                print(f"[vld_win] thinking timer fire err: {e}", flush=True)
 
     def shutdown(self):
         self.running = False
+        self._cancel_thinking()
         if self.local_sock:
             try:
                 self.local_sock.close()
@@ -137,6 +176,19 @@ class VibeDaemon:
                 conn.sendall(b"OK stopping\n")
                 self.shutdown()
                 os._exit(0)
+
+            # 解析 STATE cc.<state>, 决定是否启动 thinking 推断定时器
+            if cmd.startswith("STATE "):
+                rest = cmd[6:].strip()
+                if "." in rest:
+                    client, state = rest.split(".", 1)
+                    if state == "loading":
+                        # 收到 loading -> 启动 thinking 推断定时器
+                        self._start_thinking(client)
+                    else:
+                        # 其他状态 (busy/success/error/alarm/waiting/thinking/...)
+                        # -> 取消定时器 (有事件发生)
+                        self._cancel_thinking()
 
             resp = self.send_to_esp(cmd)
             conn.sendall((resp + "\n").encode())
