@@ -2,18 +2,18 @@
 
 AI 编程客户端状态灯 — 通过 WiFi 控制 24 颗 WS2812 LED 环形灯条。
 
-支持 8 个语义状态、3 个 AI 客户端前缀（OpenClaw / OpenCode / Claude Code），
+支持 9 个语义状态、3 个 AI 客户端前缀（OpenClaw / OpenCode / Claude Code），
 每个状态在环形 24 颗上跑独立动画。
 
 ## ✨ 特性
 
-- **8 个动画状态**：thinking / coding / busy / waiting / success / error / alarm / off
+- **9 个动画状态**：thinking / coding / busy / waiting / success / error / alarm / loading
 - **3 个客户端颜色映射**：oc / oo / cc 各有自己的 base 色
 - **环形 24 颗**全参与动画（D2 - D25），无静默 LED
 - **TCP 长连接保活**：自动识别 timeout 异常（MicroPython 1.28 兼容）
 - **WiFi 自动重连**：掉线后 10s 内自动恢复
 - **UDP 服务发现** 🆕：ESP32 每秒广播自身 IP:port，ESP32 IP 变了 client 自动发现
-- **Boot 按钮**：单击循环 client / 双击切 off / 长按 reboot
+- **Boot 按钮**：单击循环 client / 长按 reboot
 
 ## 🏗 架构
 
@@ -169,7 +169,7 @@ vibe-light:v2 ip=192.168.0.236 tcp_port=8888
 | `success`  | 绿色呼吸 | 全灯同步 sin 呼吸 | 2s |
 | `error`    | 红↔橙快闪 + 抖动 | 偶/奇位错位 + 100ms 切色 | 500ms |
 | `alarm`    | 红蓝全闪 | 200ms 全闪 | 200ms |
-| `off`      | 全灭 | — | — |
+| `loading`  | 绿色顺时针拖尾 | head=0.50/tail=0.10，先扩到 12 颗再持续旋转 | 140ms/帧 |
 
 **client 颜色前缀**：
 
@@ -189,7 +189,7 @@ STATE <client>.<state>     → OK state=<client>.<state> ANIM
 CLIENT <oc|oo|cc>          → OK client=<client>
 BRIGHT <0-100>             → OK bright=<n>%
 COLOR <r> <g> <b>          → OK override=<r>,<g>,<b>
-STATUS                     → {"client":"oc","state":"off",...}
+STATUS                     → {"client":"oc","state":"idle",...}
 HELP                       → 帮助文本
 ```
 
@@ -208,7 +208,6 @@ HELP                       → 帮助文本
 | 操作 | 行为 |
 |---|---|
 | 单击 | 循环切换 client（OC → OO → CC → OC）|
-| 双击 | 切到 off 状态 |
 | 长按 ≥2s | 软重启 ESP32 |
 
 ## 📦 部署环境
