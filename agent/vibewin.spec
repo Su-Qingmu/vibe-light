@@ -22,7 +22,20 @@ a = Analysis(
     pathex=[],
     binaries=[],
     datas=[],
-    hiddenimports=[],
+    hiddenimports=[
+        # Force-include stdlib modules that pathlib/zipfile/inspect need
+        # transitively. They're in `excludes` above for size, but the
+        # bootloader runtime hook (pyi_rth_inspect) crashes at exe startup
+        # without them:
+        #   ModuleNotFoundError: No module named 'urllib'
+        'urllib', 'urllib.parse', 'urllib.request', 'urllib.error',
+        'http', 'http.client',
+        'ssl', 'email', 'email.message', 'html', 'html.parser',
+        'xml', 'xml.etree', 'xml.parsers',
+        'sqlite3', 'concurrent', 'concurrent.futures',
+        'multiprocessing', 'multiprocessing.sharedctypes',
+        'unittest', 'logging', 'logging.handlers',
+    ],
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
