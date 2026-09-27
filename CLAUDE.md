@@ -98,6 +98,9 @@ TCP :8888  ──────→  ESP32 (main.py)  ──────→  WS2812
 | `pi5/test_states.py` | 8 状态回归测试 (单长连接) |
 | `agent/vl` | agent 用 CLI (单条命令, 优先走 vld daemon) |
 | `agent/vld` | unix socket daemon (保持 ESP32 TCP 长连接) |
+| `agent/vibewin.py` | Windows GUI (tkinter + 5s TCP 心跳 + UDP/TCP 发现) |
+| `agent/vibewin.spec` | PyInstaller spec (onefile, windowed) |
+| `.github/workflows/release-vibewin.yml` | tag/main → release, dispatch → artifact |
 | `clients/claude/vibe-claude-hook.sh` | Claude Code hooks → 写 /tmp/vibe/claude-*.json |
 | `clients/openclaw/handler.ts` | OpenClaw hook → /tmp/vibe/openclaw-*.json |
 | `clients/opencode/vibe-light.ts` | OpenCode plugin → /tmp/vibe/opencode-current.json |

@@ -86,6 +86,57 @@ systemctl --user start vld.service
 systemctl --user status vld.service
 ```
 
+## `vibewin` — Windows 桌面 GUI 🆕
+
+给 Windows 终端用户的开箱即用图形界面。
+
+**下载**: [Releases 页](https://github.com/Su-Qingmu/vibe-light/releases) `vibewin-windows-x64.exe`(单文件,无需安装,无需 Python)
+- `latest` release: 每个 main push 自动更新(rolling)
+- `v*` tag release: 版本化,适合固定使用
+
+**功能**:
+- **在线检测**: 后台线程维持 TCP 长连接,每 5s 发 PING,断线 2s 内重连。UI 红/绿圆点实时显示状态
+- **自动发现**: Discover 按钮先听 UDP 5000 广播 3s,无响应则 TCP 扫描 3 个常见子网(192.168.0/1, 10.0.0)
+- **9 个状态按钮**: thinking / coding / busy / waiting / success / error / alarm / loading / off
+- **3 个 client 单选**: oc (OpenClaw 红) / oo (OpenCode 蓝) / cc (Claude Code 橙)
+- **亮度滑块**: 0-100,松手时发送 BRIGHT 命令(避免拖动时刷屏)
+- **RGB 颜色覆写**: R/G/B 数字框 + Set 按钮,发送 COLOR 命令(下次 STATE 自动冲掉)
+- **配置持久化**: `~/.config/vibe-light/esp32.json` 保存上次 host:port
+
+**界面**:
+
+```
+┌────────────────────────────────────────────┐
+│ Vibe-Win                                   │
+├────────────────────────────────────────────┤
+│ Host:[192.168.0.236] Port:[8888] [Discover]│
+│ ● online since 14:32:07                    │
+├────────────────────────────────────────────┤
+│ Client  (●)OC  ( )OO  ( )CC                │
+├────────────────────────────────────────────┤
+│ [thinking][coding][busy][waiting]           │
+│ [success] [error]  [alarm] [loading][off]   │
+├────────────────────────────────────────────┤
+│ Brightness  [————●————] 50                  │
+├────────────────────────────────────────────┤
+│ Color R[128] G[128] B[128]  [Set]           │
+├────────────────────────────────────────────┤
+│ Last: OK state=cc.thinking ANIM            │
+└────────────────────────────────────────────┘
+```
+
+**源码构建**:
+```bash
+cd agent/
+pip install pyinstaller
+pyinstaller --noconfirm vibewin.spec
+# 产出 dist/vibewin.exe (约 6 MB)
+```
+
+**GitHub Actions 发布**: `.github/workflows/release-vibewin.yml`
+- 触发:`v*` tag push → 版本化 release;`main` push → 覆盖 `latest` release;`workflow_dispatch` → 仅产出 artifact
+- 自动 upload artifact + `gh release create` 发布 exe
+
 ## 接入 agent 的方式
 
 ### OpenClaw agent

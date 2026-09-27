@@ -34,3 +34,8 @@ venv/
 # 日志
 logs/
 *.log
+
+# PyInstaller 构建产物
+agent/dist/
+agent/build/
+*.spec.bak
