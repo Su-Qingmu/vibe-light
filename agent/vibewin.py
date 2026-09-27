@@ -62,6 +62,53 @@ HEARTBEAT_INTERVAL = 5.0   # seconds between PINGs
 RECONNECT_DELAY = 2.0      # wait after failure before retry
 PING_TIMEOUT = 2.0         # recv timeout per PING
 
+# ============== UI palette (dark theme, inspired by iambest1-hue/light) ==============
+# Color tokens (inspired by reference repo, adapted for tkinter)
+BG_DEEP   = "#0e1015"   # window background (deeper than reference's #13151c)
+BG_PANEL  = "#181b23"   # panel background
+BG_INPUT  = "#222632"   # input control background
+TXT_MAIN  = "#f4f5f8"   # primary text (~ rgba(255,255,255,0.96))
+TXT_DIM   = "#9099a8"   # secondary text (~ rgba(232,236,244,0.62))
+HAIRLINE  = "#222631"   # subtle separator (~ rgba(255,255,255,0.09))
+
+# Reference state palette (4 buckets; mapped from my 9 states)
+STATE_COLORS = {
+    "off":      "#3a3f4b",
+    "idle":     "#8b94a3",
+    "thinking": "#4ea2ff",
+    "coding":   "#4ea2ff",
+    "busy":     "#4ea2ff",
+    "loading":  "#4ea2ff",
+    "waiting":  "#25d6a0",
+    "success":  "#25d6a0",
+    "error":    "#ff6058",
+    "alarm":    "#ff6058",
+}
+
+# Client colors (from existing pi5/CLIENT_BASE: oc=red, oo=blue, cc=orange)
+CLIENT_COLORS = {
+    "oc": "#ff5a4e",
+    "oo": "#5a8eff",
+    "cc": "#ffa84a",
+}
+
+# Fonts
+FONT_FAMILY = ("Segoe UI", "Microsoft YaHei", "PingFang SC", "Helvetica Neue", "sans-serif")
+FONT_MONO   = ("Cascadia Code", "Consolas", "Courier New", "monospace")
+FONT_REG    = (FONT_FAMILY[0], 10)
+FONT_BOLD   = (FONT_FAMILY[0], 10, "bold")
+FONT_DIM    = (FONT_FAMILY[0], 9)
+FONT_HDR    = (FONT_FAMILY[0], 11, "bold")
+FONT_TINY   = (FONT_FAMILY[0], 8)
+
+# Layout
+WINDOW_W, WINDOW_H = 480, 640
+TITLE = "Vibe-Win"
+PILL_H = 38               # state button height
+PILL_RADIUS = 999         # pill border radius (effectively full curve)
+PILL_PAD = 8
+CHIP_H = 32
+
 # ============== TCP client (one-shot, blocking) ==============
 def _send_one_shot(host, port, cmd, timeout=2.0):
     """Open socket, send cmd + newline, read until \\n or timeout. Return decoded str."""
@@ -263,104 +310,414 @@ class OnlineMonitor(threading.Thread):
 
 # ============== GUI ==============
 class VibeGUI:
+    """Dark-themed tkinter control panel. Canvas-drawn for rounded corners,
+    glossy indicator, halo animation, custom pill buttons / chips / slider."""
+
     def __init__(self):
         self.cfg = load_config()
         self.root = tk.Tk()
         self.root.title(TITLE)
         self.root.geometry(f"{WINDOW_W}x{WINDOW_H}")
         self.root.resizable(False, False)
+        self.root.configure(bg=BG_DEEP)
+
+        # Configure ttk styles for dark theme
+        self._setup_styles()
 
         # State vars
         self.host = tk.StringVar(value=self.cfg.get("host", ""))
         self.port = tk.IntVar(value=self.cfg.get("port", DEFAULT_PORT))
         self.client = tk.StringVar(value=self.cfg.get("client", "oc"))
         self.brightness = tk.IntVar(value=self.cfg.get("brightness", DEFAULT_BRIGHTNESS))
+        self.r_var = tk.IntVar(value=self.cfg.get("color", [128, 128, 128])[0])
+        self.g_var = tk.IntVar(value=self.cfg.get("color", [128, 128, 128])[1])
+        self.b_var = tk.IntVar(value=self.cfg.get("color", [128, 128, 128])[2])
         self.status_text = tk.StringVar(value="Ready.")
-        self.indicator_text = tk.StringVar(value="● offline")
-        self.indicator_color = tk.StringVar(value="#d04040")
+        self.indicator_text = tk.StringVar(value="offline")
+        self.last_cmd_text = tk.StringVar(value="—")
+
+        # Animation state for indicator
+        self._anim_phase = 0.0
+        self._anim_color = STATE_COLORS["off"]
+        self._anim_pulse = False   # True when working/blue
+        self._anim_shake = False   # True when error/red
+        self._anim_after_id = None
+
+        # Cached button canvas refs (for hover redraw)
+        self._state_btns = {}     # name -> {'canvas', 'rect', 'text', 'dot'}
+        self._client_chips = {}   # name -> {'canvas', 'rect', 'text', 'dot'}
 
         self.monitor = None
         self._build()
         self._start_monitor()
+        self._animate_indicator()
 
-        # Persist config on close
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
+
+    # ----- ttk style (dark theme) -----
+    def _setup_styles(self):
+        s = ttk.Style()
+        # Use clam as base (most styleable)
+        try:
+            s.theme_use("clam")
+        except tk.TclError:
+            pass
+        s.configure(".",
+                    background=BG_DEEP, foreground=TXT_MAIN,
+                    fieldbackground=BG_INPUT, bordercolor=HAIRLINE,
+                    font=FONT_REG)
+        s.configure("TFrame", background=BG_DEEP)
+        s.configure("Panel.TFrame", background=BG_PANEL)
+        s.configure("TLabel", background=BG_DEEP, foreground=TXT_MAIN, font=FONT_REG)
+        s.configure("Dim.TLabel", background=BG_DEEP, foreground=TXT_DIM, font=FONT_DIM)
+        s.configure("Hdr.TLabel", background=BG_DEEP, foreground=TXT_MAIN, font=FONT_HDR)
+        s.configure("Mono.TLabel", background=BG_DEEP, foreground=TXT_MAIN, font=(FONT_MONO[0], 10))
+        s.configure("TEntry", fieldbackground=BG_INPUT, foreground=TXT_MAIN,
+                    insertcolor=TXT_MAIN, borderwidth=1, relief="flat")
+        s.map("TEntry",
+              foreground=[("focus", TXT_MAIN)],
+              fieldbackground=[("focus", BG_INPUT)])
+        s.configure("TSpinbox", fieldbackground=BG_INPUT, foreground=TXT_MAIN,
+                    arrowcolor=TXT_DIM, borderwidth=1, relief="flat")
+        s.configure("Discover.TButton",
+                    background=BG_INPUT, foreground=TXT_MAIN,
+                    borderwidth=0, relief="flat", font=FONT_BOLD)
+        s.map("Discover.TButton",
+              background=[("active", "#2c3340"), ("disabled", BG_INPUT)],
+              foreground=[("disabled", TXT_DIM)])
+        s.configure("Set.TButton",
+                    background="#4ea2ff", foreground="#0e1015",
+                    borderwidth=0, relief="flat", font=FONT_BOLD)
+        s.map("Set.TButton",
+              background=[("active", "#6ab2ff"), ("disabled", "#2a3a55")])
 
     # ----- UI construction -----
     def _build(self):
-        pad = {"padx": 8, "pady": 4}
+        pad = {"padx": 16, "pady": 0}
 
-        # Endpoint frame
-        f_endpoint = ttk.LabelFrame(self.root, text="Endpoint")
-        f_endpoint.pack(fill="x", **pad)
-        ttk.Label(f_endpoint, text="Host:").grid(row=0, column=0, sticky="w", padx=4, pady=4)
-        ttk.Entry(f_endpoint, textvariable=self.host, width=20).grid(row=0, column=1, sticky="w", padx=4)
-        ttk.Label(f_endpoint, text="Port:").grid(row=0, column=2, sticky="w", padx=4)
-        ttk.Entry(f_endpoint, textvariable=self.port, width=8).grid(row=0, column=3, sticky="w", padx=4)
-        ttk.Button(f_endpoint, text="Discover", command=self.on_discover).grid(row=0, column=4, padx=4)
-
-        # Indicator (online/offline)
-        f_ind = ttk.Frame(f_endpoint)
-        f_ind.grid(row=1, column=0, columnspan=5, sticky="w", padx=4, pady=2)
-        self.indicator_canvas = tk.Canvas(f_ind, width=14, height=14, highlightthickness=0)
-        self.indicator_canvas.pack(side="left")
-        self.indicator_dot = self.indicator_canvas.create_oval(2, 2, 12, 12, fill="#d04040", outline="")
-        ttk.Label(f_ind, textvariable=self.indicator_text).pack(side="left", padx=6)
-
-        # Apply endpoint on Enter
+        # Endpoint section
+        sec = self._make_section(self.root, "ENDPOINT")
+        row = ttk.Frame(sec, style="Panel.TFrame")
+        row.pack(fill="x", padx=12, pady=8)
+        ttk.Label(row, text="Host", style="Dim.TLabel").pack(side="left")
+        host_e = ttk.Entry(row, textvariable=self.host, width=18, font=(FONT_MONO[0], 10))
+        host_e.pack(side="left", padx=(6, 12))
+        ttk.Label(row, text="Port", style="Dim.TLabel").pack(side="left")
+        port_e = ttk.Entry(row, textvariable=self.port, width=6, font=(FONT_MONO[0], 10))
+        port_e.pack(side="left", padx=(6, 12))
+        self._discover_btn = ttk.Button(row, text="Discover", style="Discover.TButton",
+                                        command=self.on_discover)
+        self._discover_btn.pack(side="right", ipadx=10, ipady=4)
         self.host.trace_add("write", lambda *_: self._apply_endpoint())
         self.port.trace_add("write", lambda *_: self._apply_endpoint())
 
-        # Client frame
-        f_client = ttk.LabelFrame(self.root, text="Client")
-        f_client.pack(fill="x", **pad)
-        for i, c in enumerate(VALID_CLIENTS):
-            ttk.Radiobutton(f_client, text=c.upper(), value=c, variable=self.client,
-                            command=self.on_client_change).pack(side="left", padx=10, pady=4)
+        # Indicator row (glossy dot + label + last command)
+        ind = ttk.Frame(sec, style="Panel.TFrame")
+        ind.pack(fill="x", padx=12, pady=(0, 10))
+        self.indicator_canvas = tk.Canvas(ind, width=24, height=24,
+                                           bg=BG_PANEL, highlightthickness=0)
+        self.indicator_canvas.pack(side="left")
+        self.indicator_canvas.bind("<Button-1>", lambda e: None)  # decorative
+        ttk.Label(ind, textvariable=self.indicator_text,
+                  style="Dim.TLabel").pack(side="left", padx=(8, 16))
+        ttk.Label(ind, textvariable=self.last_cmd_text,
+                  style="Mono.TLabel").pack(side="right")
 
-        # State frame (9 buttons in 2 rows)
-        f_state = ttk.LabelFrame(self.root, text="State")
-        f_state.pack(fill="x", **pad)
-        for i, s in enumerate(VALID_STATES):
-            r, c = divmod(i, 5)
-            ttk.Button(f_state, text=s, width=10,
-                       command=lambda s=s: self.on_state(s)).grid(row=r, column=c, padx=4, pady=4)
+        # Client chips section
+        csec = self._make_section(self.root, "CLIENT")
+        crows = ttk.Frame(csec, style="Panel.TFrame")
+        crows.pack(fill="x", padx=12, pady=8)
+        for c in VALID_CLIENTS:
+            chip = self._make_chip(crows, c.upper(), CLIENT_COLORS[c],
+                                   lambda c=c: self.on_client_change(c))
+            chip.pack(side="left", padx=(0, 8))
+        self._refresh_client_chips()
 
-        # Brightness
-        f_bright = ttk.LabelFrame(self.root, text="Brightness")
-        f_bright.pack(fill="x", **pad)
-        self.brightness_label = ttk.Label(f_bright, text=f"{self.brightness.get()}")
-        self.brightness_label.pack(side="right", padx=8)
-        scale = ttk.Scale(f_bright, from_=0, to=100, orient="horizontal",
-                          variable=self.brightness, command=self._on_brightness_scale)
-        scale.pack(side="left", fill="x", expand=True, padx=8, pady=4)
-        scale.bind("<ButtonRelease-1>", self.on_brightness_release)
+        # State grid section
+        ssec = self._make_section(self.root, "STATE")
+        sgrid = ttk.Frame(ssec, style="Panel.TFrame")
+        sgrid.pack(fill="x", padx=12, pady=8)
+        # 5 columns x 2 rows for 9 states
+        cols = 5
+        for i, name in enumerate(VALID_STATES):
+            r, c = divmod(i, cols)
+            btn = self._make_pill(sgrid, name, STATE_COLORS[name],
+                                  lambda n=name: self.on_state(n))
+            btn.grid(row=r, column=c, padx=4, pady=4, sticky="nsew")
+        for c in range(cols):
+            sgrid.columnconfigure(c, weight=1, uniform="state")
 
-        # Color override
-        f_color = ttk.LabelFrame(self.root, text="Color override")
-        f_color.pack(fill="x", **pad)
-        self.r_var = tk.IntVar(value=128)
-        self.g_var = tk.IntVar(value=128)
-        self.b_var = tk.IntVar(value=128)
+        # Brightness custom slider
+        bsec = self._make_section(self.root, "BRIGHTNESS")
+        brow = ttk.Frame(bsec, style="Panel.TFrame")
+        brow.pack(fill="x", padx=12, pady=8)
+        self.brightness_canvas = tk.Canvas(brow, height=24, bg=BG_PANEL,
+                                            highlightthickness=0)
+        self.brightness_canvas.pack(side="left", fill="x", expand=True, padx=(0, 12))
+        self.brightness_canvas.bind("<Configure>", lambda e: self._draw_brightness())
+        self.brightness_canvas.bind("<Button-1>", self._brightness_click)
+        self.brightness_canvas.bind("<B1-Motion>", self._brightness_drag)
+        self.brightness_canvas.bind("<ButtonRelease-1>", self.on_brightness_release)
+        self.brightness_value_label = ttk.Label(brow, text=f"{self.brightness.get()}",
+                                                  style="Mono.TLabel")
+        self.brightness_value_label.pack(side="right")
+        # Sync label + redraw when brightness changes programmatically
+        self.brightness.trace_add("write", lambda *_: self._on_brightness_var_change())
+
+    def _on_brightness_var_change(self):
+        self.brightness_value_label.config(text=f"{self.brightness.get()}")
+        self._draw_brightness()
+
+        # Color override row
+        ksec = self._make_section(self.root, "COLOR")
+        krow = ttk.Frame(ksec, style="Panel.TFrame")
+        krow.pack(fill="x", padx=12, pady=8)
+        self.color_preview = tk.Canvas(krow, width=24, height=24, bg=BG_PANEL,
+                                        highlightthickness=0)
+        self.color_preview.pack(side="right", padx=(8, 0))
         for label, var in (("R", self.r_var), ("G", self.g_var), ("B", self.b_var)):
-            ttk.Label(f_color, text=label).pack(side="left", padx=(8, 2))
-            ttk.Spinbox(f_color, from_=0, to=255, width=5, textvariable=var).pack(side="left", padx=2)
-        ttk.Button(f_color, text="Set", command=self.on_color_set).pack(side="left", padx=8)
+            grp = ttk.Frame(krow, style="Panel.TFrame")
+            grp.pack(side="left", padx=(0, 12))
+            ttk.Label(grp, text=label, style="Dim.TLabel").pack(side="left")
+            sp = ttk.Spinbox(grp, from_=0, to=255, width=4, textvariable=var,
+                             font=(FONT_MONO[0], 10))
+            sp.pack(side="left", padx=(4, 0))
+        for var in (self.r_var, self.g_var, self.b_var):
+            var.trace_add("write", lambda *_: self._draw_color_preview())
+        self._draw_color_preview()
+        ttk.Button(krow, text="Set", style="Set.TButton",
+                   command=self.on_color_set).pack(side="right", padx=(8, 0),
+                                                    ipadx=12, ipady=4)
 
-        # Status bar
-        f_status = ttk.Frame(self.root, relief="sunken", borderwidth=1)
-        f_status.pack(fill="x", side="bottom", ipady=4)
-        ttk.Label(f_status, textvariable=self.status_text, foreground="#444").pack(side="left", padx=8)
+        # Status bar (bottom, hairline top, dim text)
+        bar = tk.Frame(self.root, bg=BG_PANEL, height=26)
+        bar.pack(fill="x", side="bottom")
+        tk.Frame(bar, bg=HAIRLINE, height=1).pack(fill="x", side="top")
+        ttk.Label(bar, textvariable=self.status_text,
+                  style="Dim.TLabel").pack(side="left", padx=12, pady=4)
 
-    # ----- Online indicator -----
+    def _make_section(self, parent, title):
+        sec = ttk.Frame(parent, style="Panel.TFrame")
+        sec.pack(fill="x", padx=16, pady=(12, 0))
+        ttk.Label(sec, text=title, style="Dim.TLabel").pack(anchor="w", padx=12, pady=(8, 0))
+        return sec
+
+    # ----- Pill button (state) -----
+    def _make_pill(self, parent, label, accent, on_click):
+        """Canvas-drawn pill button (rounded full-radius)."""
+        c = tk.Canvas(parent, height=PILL_H, bg=BG_PANEL,
+                       highlightthickness=0, cursor="hand2")
+        state = {"hover": False, "pressed": False}
+        rect = c.create_rectangle(0, 0, 100, PILL_H, fill=BG_INPUT, outline=HAIRLINE, width=1)
+        dot = c.create_oval(8, PILL_H//2 - 3, 14, PILL_H//2 + 3, fill=accent, outline="")
+        text = c.create_text(22, PILL_H//2, text=label, fill=TXT_MAIN, anchor="w",
+                              font=(FONT_FAMILY[0], 10, "bold"))
+
+        def redraw():
+            cw = c.winfo_width() or 100
+            # Resize rect
+            c.coords(rect, 1, 1, cw - 2, PILL_H - 1)
+            # Background depends on hover/pressed
+            if state["pressed"]:
+                c.itemconfig(rect, fill=accent)
+                c.itemconfig(text, fill="#0e1015")
+            elif state["hover"]:
+                c.itemconfig(rect, fill="#2a2f3a")
+                c.itemconfig(text, fill=TXT_MAIN)
+            else:
+                c.itemconfig(rect, fill=BG_INPUT)
+                c.itemconfig(text, fill=TXT_MAIN)
+            # Center the text in remaining space (after dot)
+            text_bbox = c.bbox(text)
+            if text_bbox:
+                text_w = text_bbox[2] - text_bbox[0]
+                c.coords(text, cw // 2 + 4, PILL_H // 2)
+
+        def on_enter(_):
+            state["hover"] = True
+            redraw()
+
+        def on_leave(_):
+            state["hover"] = False
+            state["pressed"] = False
+            redraw()
+
+        def on_press(_):
+            state["pressed"] = True
+            redraw()
+
+        def on_release(_):
+            if state["pressed"]:
+                state["pressed"] = False
+                redraw()
+                on_click()
+
+        c.bind("<Configure>", lambda e: redraw())
+        c.bind("<Enter>", on_enter)
+        c.bind("<Leave>", on_leave)
+        c.bind("<ButtonPress-1>", on_press)
+        c.bind("<ButtonRelease-1>", on_release)
+        # Forward events on dot/text too
+        for item in (dot, text):
+            c.tag_bind(item, "<Enter>", on_enter)
+            c.tag_bind(item, "<Leave>", on_leave)
+            c.tag_bind(item, "<ButtonPress-1>", on_press)
+            c.tag_bind(item, "<ButtonRelease-1>", on_release)
+
+        self._state_btns[label] = {"canvas": c, "rect": rect, "text": text, "dot": dot,
+                                    "state": state, "redraw": redraw, "accent": accent}
+        return c
+
+    # ----- Chip button (client) -----
+    def _make_chip(self, parent, label, accent, on_click):
+        c = tk.Canvas(parent, height=CHIP_H, width=110, bg=BG_PANEL,
+                       highlightthickness=0, cursor="hand2")
+        state = {"hover": False}
+        rect = c.create_rectangle(0, 0, 110, CHIP_H, fill=BG_INPUT, outline=HAIRLINE, width=1)
+        dot = c.create_oval(10, CHIP_H//2 - 4, 18, CHIP_H//2 + 4, fill=accent, outline="")
+        text = c.create_text(56, CHIP_H//2, text=label, fill=TXT_MAIN, font=FONT_BOLD)
+
+        def redraw():
+            cw = c.winfo_width() or 110
+            c.coords(rect, 1, 1, cw - 2, CHIP_H - 1)
+            # Background based on hover + selected (set by _refresh_client_chips)
+            if state.get("selected", False):
+                c.itemconfig(rect, fill=accent, outline=accent)
+                c.itemconfig(text, fill="#0e1015")
+            elif state["hover"]:
+                c.itemconfig(rect, fill="#2a2f3a")
+                c.itemconfig(text, fill=TXT_MAIN)
+            else:
+                c.itemconfig(rect, fill=BG_INPUT, outline=HAIRLINE)
+                c.itemconfig(text, fill=TXT_MAIN)
+
+        def on_enter(_):
+            state["hover"] = True
+            redraw()
+
+        def on_leave(_):
+            state["hover"] = False
+            redraw()
+
+        def on_click_event(_):
+            on_click()
+
+        c.bind("<Configure>", lambda e: redraw())
+        c.bind("<Enter>", on_enter)
+        c.bind("<Leave>", on_leave)
+        c.bind("<ButtonRelease-1>", on_click_event)
+        for item in (dot, text):
+            c.tag_bind(item, "<Enter>", on_enter)
+            c.tag_bind(item, "<Leave>", on_leave)
+            c.tag_bind(item, "<ButtonRelease-1>", on_click_event)
+
+        self._client_chips[label.lower()] = {"canvas": c, "rect": rect, "text": text,
+                                              "dot": dot, "state": state,
+                                              "redraw": redraw, "accent": accent}
+        return c
+
+    def _refresh_client_chips(self):
+        cur = self.client.get()
+        for name, info in self._client_chips.items():
+            info["state"]["selected"] = (name == cur)
+            info["redraw"]()
+
+    # ----- Glossy indicator (online/offline) -----
     def _update_indicator(self, online, ts):
         if online:
-            self.indicator_canvas.itemconfig(self.indicator_dot, fill="#40c040")
+            self._anim_color = "#25d6a0"   # green = online
+            self._anim_pulse = True
+            self._anim_shake = False
             local = time.strftime("%H:%M:%S", time.localtime(ts))
-            self.indicator_text.set(f"● online since {local}")
+            self.indicator_text.set(f"online · since {local}")
         else:
-            self.indicator_canvas.itemconfig(self.indicator_dot, fill="#d04040")
-            self.indicator_text.set("● offline")
+            self._anim_color = "#ff6058"   # red = offline
+            self._anim_pulse = False
+            self._anim_shake = True
+            self.indicator_text.set("offline")
+
+    def _animate_indicator(self):
+        """Pulse / shake loop for the online indicator.
+        Per reference: working = 1.6s pulse, error = 0.4s shake."""
+        c = self.indicator_canvas
+        c.delete("all")
+        w = 24
+        # Outer halo (3 concentric circles, fading)
+        cx, cy = w // 2, w // 2
+        halo_r = 11 + int(2 * abs(0.5 - (self._anim_phase % 1.0))) if self._anim_pulse else 11
+        for r, color in [(halo_r + 2, "#222631"), (halo_r, "#3a3f4b")]:
+            c.create_oval(cx - r, cy - r, cx + r, cy + r, fill=color, outline="")
+        # Main dot 9px
+        dot_r = 4
+        # Shake offset for offline
+        dx = 0
+        if self._anim_shake:
+            shake_phase = (self._anim_phase * 10) % 1
+            dx = int(2 * (0.5 - shake_phase) * 2)  # ±2px
+        c.create_oval(cx - dot_r + dx, cy - dot_r, cx + dot_r + dx, cy + dot_r,
+                       fill=self._anim_color, outline="")
+        # Glossy highlight (top-left radial gradient approximation)
+        c.create_oval(cx - 2 + dx, cy - 2, cx + 1 + dx, cy + 1,
+                       fill="#ffffff", outline="")
+
+        self._anim_phase = (self._anim_phase + 0.06) % 1.6
+        self._anim_after_id = self.root.after(50, self._animate_indicator)
+
+    # ----- Brightness custom slider -----
+    def _draw_brightness(self):
+        c = self.brightness_canvas
+        c.delete("all")
+        w = c.winfo_width()
+        h = c.winfo_height()
+        if w < 10:
+            return
+        # Track
+        track_y = h // 2 - 3
+        # Left half: filled with accent
+        val = self.brightness.get()
+        fill_w = int((val / 100) * (w - 8))
+        if fill_w > 0:
+            c.create_rectangle(4, track_y, 4 + fill_w, track_y + 6,
+                                fill="#4ea2ff", outline="")
+        # Right half: BG_INPUT
+        if 4 + fill_w < w - 4:
+            c.create_rectangle(4 + fill_w, track_y, w - 4, track_y + 6,
+                                fill=BG_INPUT, outline="")
+        # Thumb
+        thumb_x = 4 + fill_w
+        thumb_y = h // 2
+        c.create_oval(thumb_x - 7, thumb_y - 7, thumb_x + 7, thumb_y + 7,
+                       fill=TXT_MAIN, outline=HAIRLINE)
+
+    def _brightness_click(self, event):
+        self._brightness_set_from_x(event.x)
+
+    def _brightness_drag(self, event):
+        self._brightness_set_from_x(event.x)
+
+    def _brightness_set_from_x(self, x):
+        w = self.brightness_canvas.winfo_width()
+        if w < 10:
+            return
+        pct = max(0, min(100, int((x / (w - 8)) * 100)))
+        self.brightness.set(pct)
+        self.brightness_value_label.config(text=f"{pct}")
+        self._draw_brightness()
+
+    def on_brightness_release(self, _event=None):
+        self._send_and_show(f"BRIGHT {int(self.brightness.get())}")
+
+    # ----- Color preview -----
+    def _draw_color_preview(self):
+        c = self.color_preview
+        c.delete("all")
+        w = int(c["width"])
+        h = int(c["height"])
+        try:
+            color = f"#{self.r_var.get():02x}{self.g_var.get():02x}{self.b_var.get():02x}"
+        except Exception:
+            color = "#888888"
+        c.create_rectangle(2, 2, w - 2, h - 2, fill=color, outline=HAIRLINE)
 
     # ----- Monitor lifecycle -----
     def _start_monitor(self):
@@ -382,25 +739,26 @@ class VibeGUI:
             self.monitor.update_endpoint(host, port)
         else:
             self._start_monitor()
-        # Persist
         self.cfg["host"] = host
         self.cfg["port"] = port
         save_config(self.cfg)
 
     def _on_monitor_change(self, online, ts):
-        # Cross-thread -> schedule on main thread
         self.root.after(0, self._update_indicator, online, ts)
 
     def _on_close(self):
         if self.monitor:
             self.monitor.stop()
+        if self._anim_after_id:
+            try:
+                self.root.after_cancel(self._anim_after_id)
+            except Exception:
+                pass
         save_config(self.cfg)
         self.root.destroy()
 
     # ----- Discover -----
     def on_discover(self):
-        if not self._discover_btn_state(True):
-            return
         self._set_status("Discovering (UDP 3s + TCP scan)...")
 
         def worker():
@@ -409,12 +767,7 @@ class VibeGUI:
 
         threading.Thread(target=worker, daemon=True, name="Discover").start()
 
-    def _discover_btn_state(self, busy):
-        # Could disable button; placeholder for future enhancement
-        return True
-
     def _discover_done(self, hit):
-        self._discover_btn_state(False)
         if hit:
             host, port = hit
             self.host.set(host)
@@ -424,27 +777,28 @@ class VibeGUI:
         else:
             self._set_status("Discovery failed (no ESP32 found)")
 
-    # ----- Client / state / brightness / color -----
-    def on_client_change(self):
-        # Persist preference
-        self.cfg["client"] = self.client.get()
+    # ----- Client / state / color -----
+    def on_client_change(self, name):
+        self.client.set(name)
+        self._refresh_client_chips()
+        self.cfg["client"] = name
         save_config(self.cfg)
-        self._send_and_show(f"CLIENT {self.client.get()}")
+        self._send_and_show(f"CLIENT {name}")
 
     def on_state(self, name):
         if name not in VALID_STATES:
             return
+        # Brief color feedback on the indicator (matches the state color)
+        prev_color = self._anim_color
+        self._anim_color = STATE_COLORS[name]
+        self.root.after(1500, lambda: setattr(self, "_anim_color", prev_color)
+                        if self._anim_color == STATE_COLORS[name] else None)
         self._send_and_show(f"STATE {self.client.get()}.{name}")
-
-    def _on_brightness_scale(self, v):
-        # Update label live, send only on release (debounced)
-        self.brightness_label.config(text=f"{int(float(v))}")
-
-    def on_brightness_release(self, _event=None):
-        self._send_and_show(f"BRIGHT {int(self.brightness.get())}")
 
     def on_color_set(self):
         r, g, b = self.r_var.get(), self.g_var.get(), self.b_var.get()
+        self.cfg["color"] = [r, g, b]
+        save_config(self.cfg)
         self._send_and_show(f"COLOR {r} {g} {b}")
 
     # ----- Command dispatch (worker thread per call) -----
@@ -455,6 +809,8 @@ class VibeGUI:
             return
         port = int(self.port.get() or DEFAULT_PORT)
         self._set_status(f"Sending: {cmd}")
+        # Brief indicator feedback with command's "mood" color
+        self.last_cmd_text.set(cmd)
 
         def worker():
             try:
