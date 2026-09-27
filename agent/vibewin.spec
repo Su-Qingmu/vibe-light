@@ -6,6 +6,13 @@ Build:
     pyinstaller --noconfirm vibewin.spec
 Output:
     dist/vibewin.exe (onefile, ~6 MB, windowed)
+
+NOTE: be conservative with excludes. Many stdlib modules are imported
+transitively by pathlib / zipfile / inspect, and dropping any of them
+breaks the bootloader runtime hook (pyi_rth_inspect) with:
+  "ModuleNotFoundError: No module named 'urllib'"
+
+Only exclude heavyweight third-party modules that tkinter doesn't need.
 """
 
 block_cipher = None
@@ -19,18 +26,12 @@ a = Analysis(
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
-    # Strip heavyweight stdlib modules that tkinter pulls in transitively.
-    # tkinter itself + the GUI classes we use are NOT in this list.
+    # Only third-party heavyweights — DO NOT exclude stdlib modules here.
+    # pathlib/zipfile/inspect transitively need urllib/http/ssl/etc.
     excludes=[
         'numpy', 'pandas', 'scipy', 'matplotlib',
         'PIL', 'cv2', 'sklearn', 'torch',
         'tkinter.test', 'tkinter.tix',
-        'unittest', 'test',
-        'email', 'html', 'http', 'urllib',
-        'xml', 'xmlrpc', 'pydoc', 'doctest',
-        'sqlite3', 'ssl',
-        'logging.handlers', 'multiprocessing',
-        'concurrent', 'wsgiref',
     ],
     win_no_prefer_redirects=False,
     win_private_assemblies=False,
