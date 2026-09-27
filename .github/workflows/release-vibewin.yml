@@ -3,13 +3,18 @@ name: Release vibewin (Windows)
 on:
   push:
     tags:
-      - 'v*'                # v1.0.0  -> versioned release (e.g. v1.0.0)
+      - 'v*'                # tag push (v1.0.0) -> versioned release
     branches:
       - main                # main push -> rolling "latest" release
   workflow_dispatch:         # manual -> artifact only, no release
 
 permissions:
-  contents: write            # required for gh release create / delete
+  contents: write            # required by softprops/action-gh-release
+
+# Serialize runs sharing this ref; prevents duplicate asset uploads on rapid pushes
+concurrency:
+  group: release-vibewin-${{ github.ref }}
+  cancel-in-progress: false
 
 jobs:
   build:
@@ -30,13 +35,6 @@ jobs:
         working-directory: agent
         run: pyinstaller --noconfirm vibewin.spec
 
-      - name: Verify build artifact
-        shell: bash
-        run: |
-          ls -la dist/vibewin.exe
-          file dist/vibewin.exe || true
-          stat -c '%n %s bytes' dist/vibewin.exe
-
       - name: Upload as run artifact (always)
         uses: actions/upload-artifact@v4
         with:
@@ -45,44 +43,23 @@ jobs:
           if-no-files-found: error
 
       - name: Publish release
+        if: github.event_name != 'workflow_dispatch'
+        uses: softprops/action-gh-release@v2
+        with:
+          # tag push -> use the pushed tag; main push -> "latest" rolling tag
+          tag_name: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || 'latest' }}
+          name: ${{ startsWith(github.ref, 'refs/tags/') && format('Vibe-Win {0}', github.ref_name) || 'Vibe-Win (latest)' }}
+          generate_release_notes: true
+          body: |
+            **Install:** download `vibewin-windows-x64.exe`, rename to `vibewin.exe`, double-click.
+
+            **Features:**
+            - Online detection via 5s TCP heartbeat
+            - UDP broadcast + TCP subnet scan discovery
+            - 9 state buttons, brightness slider, RGB color override
+            - Persistent host config in `%USERPROFILE%\.config\vibe-light\esp32.json`
+          files: |
+            agent/dist/vibewin.exe
+          fail_on_unmatched_files: true
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        shell: bash
-        run: |
-          set -e
-          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
-            echo "Manual dispatch: artifact uploaded only, no release created."
-            exit 0
-          fi
-
-          if [[ "${{ startsWith(github.ref, 'refs/tags/') }}" == "true" ]]; then
-            TAG="${{ github.ref_name }}"
-            TITLE="Vibe-Win $TAG"
-          else
-            TAG="latest"
-            TITLE="Vibe-Win (latest)"
-            # Drop any prior "latest" release so the asset is fresh
-            gh release delete "$TAG" --yes || true
-          fi
-
-          # Build NOTES via bash heredoc to avoid YAML parsing of markdown
-          NOTES=$(cat <<EOF
-          Auto-built from \`${{ github.sha }}\` on push to \`${{ github.ref }}\`.
-
-          **Install:** download \`vibewin-windows-x64.exe\`, rename to \`vibewin.exe\`, double-click.
-
-          **Features:**
-          - Online detection via 5s TCP heartbeat
-          - UDP broadcast + TCP subnet scan discovery
-          - 9 state buttons, brightness slider, RGB color override
-          - Persistent host config in \`%USERPROFILE%\\.config\\vibe-light\\esp32.json\`
-          EOF
-          )
-
-          gh release create "$TAG" \
-            "agent/dist/vibewin.exe" \
-            --title "$TITLE" \
-            --notes "$NOTES" \
-            || { echo "::warning::gh release create failed (continuing)"; exit 0; }
-
-          echo "::notice::Published $TAG"
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
